@@ -1,6 +1,6 @@
 # Thread Ripper playback acceleration
 
-PiliPlus provides a native Dart adaptation of [Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper), based on its Range validation, CDN routing, adaptive concurrency, and HLS segment scheduling concepts. The reference was inspected at commit `e64553b1ea911946387a1cf14992ac3fc008e07d` (2026-09-28). The VOD scheduler also incorporates the implementation and reference traces from [lemonteaau/PiliPlus](https://github.com/lemonteaau/PiliPlus) at commit `014cdd38318a41c78aa61254d6adab96d831fcd4` under GPL-3.0. See the [comparison and integration decisions](thread-ripper-comparison.md). Thread Ripper’s MIT copyright and license are bundled in `assets/licenses/Bilibili-thread-ripper.LICENSE` and registered with Flutter's license registry.
+PiliPlus provides a native Dart adaptation of [Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper), based on its Range validation, CDN routing, adaptive concurrency, and HLS segment scheduling concepts. The reference was inspected at commit `e64553b1ea911946387a1cf14992ac3fc008e07d` (2026-09-28). The VOD scheduler also incorporates the implementation and reference traces from [lemonteaau/PiliPlus](https://github.com/lemonteaau/PiliPlus) at commit `014cdd38318a41c78aa61254d6adab96d831fcd4` under GPL-3.0. Thread Ripper’s MIT copyright and license are bundled in `assets/licenses/Bilibili-thread-ripper.LICENSE` and registered with Flutter's license registry.
 
 ## Controls
 
@@ -43,4 +43,4 @@ Run `flutter test --no-pub` for local transport, CDN/range, settings, and existi
 
 Run `flutter analyze --no-pub` and the appropriate native build for the target platform. Live Bilibili CDN throughput and device-specific energy/background behavior need verification on the target networks and devices; deterministic fixtures do not establish a speed improvement for every network.
 
-The [comparison report](thread-ripper-comparison.md) records current verification and reproducible local measurements against both pinned implementations. These measurements use simulated latency and do not establish performance on every real CDN or physical device.
+Verification on 2026-10-01: all 57 Flutter tests, the Linux debug build, and both native mpv smoke tests passed. Analysis reported no errors or warnings and retained 37 pre-existing informational findings. The native smoke tests cover H.264/AAC EDL playback, seeking, pausing, and fMP4 HLS decoding.

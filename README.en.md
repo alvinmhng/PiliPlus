@@ -18,6 +18,5 @@ Acceleration is off by default. Open **Settings → Audio/Video settings → 线
 ## Details and credits
 
 - [Acceleration details](docs/thread-ripper.md)
-- [Implementation comparison with lemonteaau/PiliPlus](docs/thread-ripper-comparison.md)
 - Retains upstream's [GPL-3.0 license](LICENSE). Thread Ripper's MIT license is bundled with the app.
 - Thanks to [upstream PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus), [Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper), and [lemonteaau/PiliPlus](https://github.com/lemonteaau/PiliPlus) for its VOD scheduling and regression fixtures.

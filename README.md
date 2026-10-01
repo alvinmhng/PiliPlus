@@ -18,6 +18,5 @@
 ## 说明与来源
 
 - [加速功能说明](docs/thread-ripper.md)
-- [与 lemonteaau/PiliPlus 的实现对比](docs/thread-ripper-comparison.md)
 - 继承上游 [GPL-3.0 许可](LICENSE)。Thread Ripper 的 MIT 许可随应用一同提供。
 - 感谢 [PiliPlus 上游](https://github.com/bggRGjQaUbCoE/PiliPlus)、[Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper)，以及提供视频下载调度和回归测试参考的 [lemonteaau/PiliPlus](https://github.com/lemonteaau/PiliPlus)。
