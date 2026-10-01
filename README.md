@@ -244,6 +244,12 @@
 <br/>
 <br/>
 
+## 线程撕裂者
+
+Android、iOS、Windows、macOS 和 Linux 均可在「设置 → 音视频设置 → 线程撕裂者 · 多线程加速」启用并发分段下载。视频播放器设置菜单和直播播放器菜单也提供入口。可选择自动或 4 / 8 / 16 / 32 线程、大陆 / 海外 / 自定义 CDN，以及独立的实验性 HLS 直播加速；默认关闭。
+
+实现参考 [Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper)，保留其 MIT 许可。详见 [集成说明](docs/thread-ripper.md)。
+
 ## Star History
 
 <a href="https://star-history.dera.page/#bggRGjQaUbCoE/PiliPlus&Date">

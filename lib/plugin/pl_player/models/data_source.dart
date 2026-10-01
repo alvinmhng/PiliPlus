@@ -12,9 +12,14 @@ sealed class DataSource {
 }
 
 class NetworkSource extends DataSource {
+  final List<String> videoUrls;
+  final List<String> audioUrls;
+
   NetworkSource({
     required super.videoSource,
     required super.audioSource,
+    this.videoUrls = const [],
+    this.audioUrls = const [],
   });
 }
 

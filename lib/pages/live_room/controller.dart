@@ -134,6 +134,7 @@ class LiveRoomController extends GetxController {
   late final int mid;
 
   String? videoUrl;
+  List<String> _videoUrls = const [];
   bool? isPlaying;
   late bool isFullScreen = false;
 
@@ -221,7 +222,11 @@ class LiveRoomController extends GetxController {
       return null;
     }
     return plPlayerController.setDataSource(
-      NetworkSource(videoSource: videoUrl!, audioSource: null),
+      NetworkSource(
+        videoSource: videoUrl!,
+        audioSource: null,
+        videoUrls: _videoUrls,
+      ),
       isLive: true,
       autoplay: autoplay,
       isVertical: isPortrait.value,
@@ -229,7 +234,10 @@ class LiveRoomController extends GetxController {
     );
   }
 
-  Future<void> queryLiveUrl({bool autoFullScreenFlag = false}) async {
+  Future<void> queryLiveUrl({
+    bool autoFullScreenFlag = false,
+    bool autoplay = true,
+  }) async {
     currentQn ??= await ConnectivityUtils.isWiFi
         ? Pref.liveQuality
         : Pref.liveQualityCellular;
@@ -263,6 +271,7 @@ class LiveRoomController extends GetxController {
           formatIndex: formatIndex,
           codecIndex: codecIndex,
           liveUrlIndex: liveUrlIndex,
+          autoplay: autoplay,
         ),
         if (!isLoaded.value && Accounts.heartbeat.isLogin) _fetchBlockRules(),
       ]);
@@ -279,6 +288,20 @@ class LiveRoomController extends GetxController {
   int liveUrlIndex = 0;
 
   void _initStreamIndex() {
+    final acceleration = Pref.threadRipper;
+    if (acceleration.enabled && acceleration.liveEnabled) {
+      for (final (si, source) in stream.indexed) {
+        for (final (fi, format) in source.format.indexed) {
+          if (format.formatName == 'fmp4' && format.codec.isNotEmpty) {
+            streamIndex = si;
+            formatIndex = fi;
+            codecIndex = 0;
+            liveUrlIndex = 0;
+            return;
+          }
+        }
+      }
+    }
     final pref = Pref.liveStream;
     if (pref != null) {
       try {
@@ -310,6 +333,7 @@ class LiveRoomController extends GetxController {
     int formatIndex = 0,
     int codecIndex = 0,
     int liveUrlIndex = 0,
+    bool autoplay = true,
   }) {
     this.streamIndex = streamIndex;
     this.formatIndex = formatIndex;
@@ -333,7 +357,11 @@ class LiveRoomController extends GetxController {
     currentQnDesc.value =
         LiveQuality.fromCode(currentQn)?.desc ?? currentQn.toString();
     videoUrl = VideoUtils.getLiveCdnUrl(item, index: liveUrlIndex);
-    return playerInit()?.whenComplete(_startSizeSub);
+    _videoUrls = [
+      for (final info in item.urlInfo)
+        '${info.host}${item.baseUrl}${info.extra}',
+    ];
+    return playerInit(autoplay: autoplay)?.whenComplete(_startSizeSub);
   }
 
   Future<void> queryLiveInfoH5() async {

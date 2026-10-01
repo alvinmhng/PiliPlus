@@ -43,6 +43,7 @@ Thank you for using PiliPlus.
 
 ## Acknowledgements
 
+- [Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper) — native parallel playback acceleration ([setup and implementation](docs/thread-ripper.md))
 - [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect)
 - [flutter_meedu_videoplayer](https://github.com/zezo357/flutter_meedu_videoplayer)
 - [media-kit](https://github.com/media-kit/media-kit)

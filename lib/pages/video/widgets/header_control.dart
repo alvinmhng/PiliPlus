@@ -28,6 +28,7 @@ import 'package:PiliPlus/pages/setting/models/play_settings.dart'
     show showPlayerVolumeDialog;
 import 'package:PiliPlus/pages/setting/widgets/popup_item.dart';
 import 'package:PiliPlus/pages/setting/widgets/select_dialog.dart';
+import 'package:PiliPlus/pages/setting/widgets/thread_ripper_dialog.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/local/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/pgc/controller.dart';
@@ -530,6 +531,29 @@ class HeaderControlState extends State<HeaderControl>
                         setting.put(SettingBoxKey.CDNService, result.name);
                         SmartDialog.showToast('已设置为 ${result.desc}，正在重载视频');
                         videoDetailCtr.queryVideoUrl(fromReset: true);
+                      }
+                    },
+                  ),
+                if (!isFileSource)
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.speed, size: 20),
+                    title: const Text('线程撕裂者 · 多线程加速', style: titleStyle),
+                    onTap: () async {
+                      Get.back();
+                      final changed = await showThreadRipperDialog(
+                        this.context,
+                        stats: plPlayerController.threadRipperTransport?.stats,
+                        reloadOnSave: true,
+                      );
+                      if (changed == true &&
+                          mounted &&
+                          !plPlayerController.processing) {
+                        final player = plPlayerController.videoPlayerController;
+                        videoDetailCtr.playedTime = player?.state.position;
+                        await videoDetailCtr.playerInit(
+                          autoplay: player?.state.playing ?? false,
+                        );
                       }
                     },
                   ),

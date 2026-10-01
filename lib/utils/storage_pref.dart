@@ -22,6 +22,7 @@ import 'package:PiliPlus/models/common/video/audio_quality.dart';
 import 'package:PiliPlus/models/common/video/cdn_type.dart';
 import 'package:PiliPlus/models/common/video/live_quality.dart';
 import 'package:PiliPlus/models/common/video/subtitle_pref_type.dart';
+import 'package:PiliPlus/models/common/video/thread_ripper.dart';
 import 'package:PiliPlus/models/common/video/video_decode_type.dart';
 import 'package:PiliPlus/models/common/video/video_quality.dart';
 import 'package:PiliPlus/models/user/danmaku_rule.dart';
@@ -279,6 +280,26 @@ abstract final class Pref {
       return CDNService.values.byName(cdnName);
     }
     return CDNService.backupUrl;
+  }
+
+  static ThreadRipperOptions get threadRipper {
+    final stored = _setting.get(SettingBoxKey.threadRipper);
+    final values = stored is Map ? stored : const {};
+    final mode = values['mode'];
+    return ThreadRipperOptions(
+      enabled: values['enabled'] == true,
+      liveEnabled: values['liveEnabled'] == true,
+      mode: ThreadRipperCdnMode.values.firstWhere(
+        (item) => item.name == mode,
+        orElse: () => ThreadRipperCdnMode.mainland,
+      ),
+      concurrency: values['concurrency'] is int
+          ? values['concurrency'] as int
+          : 0,
+      customHosts: values['customHosts'] is List
+          ? (values['customHosts'] as List).whereType<String>()
+          : const [],
+    );
   }
 
   static String get banWordForRecommend =>
