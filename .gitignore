@@ -75,6 +75,10 @@ app.*.map.json
 **/android/**/GeneratedPluginRegistrant.java
 **/android/key.properties
 *.jks
+*.p12
+*.keystore
+release-signing.json
+*signing-backup*.zip
 
 # iOS/XCode related
 **/ios/**/*.mode1v3
@@ -153,3 +157,4 @@ test*
 # Keep Flutter regression tests under version control.
 !/test/
 !/test/**
+!/.github/scripts/test_*.py
