@@ -61,10 +61,8 @@ android {
     }
 
     buildTypes {
-        all {
-            signingConfig = config ?: signingConfigs["debug"]
-        }
         release {
+            signingConfig = config
             if (project.hasProperty("dev")) {
                 applicationIdSuffix = ".dev"
                 resValue(
@@ -79,7 +77,14 @@ android {
 //            )
         }
         debug {
+            signingConfig = signingConfigs["debug"]
             applicationIdSuffix = ".debug"
+        }
+    }
+
+    gradle.taskGraph.whenReady {
+        if (config == null && allTasks.any { it.project == project && it.name.contains("Release") }) {
+            throw GradleException("Release signing is required. Configure android/key.properties; debug-key fallback is disabled.")
         }
     }
 

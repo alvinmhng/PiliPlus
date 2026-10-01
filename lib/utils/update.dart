@@ -16,6 +16,29 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 
 abstract final class Update {
+  /// Fork artifacts include their Git revision count. Compare that build number
+  /// before timestamps so the installed release never offers to update itself.
+  static bool isNewerRelease(
+    Map data, {
+    int versionCode = BuildConfig.versionCode,
+    String commitHash = BuildConfig.commitHash,
+    int buildTime = BuildConfig.buildTime,
+  }) {
+    if (data['target_commitish'] == commitHash) return false;
+    final assets = data['assets'];
+    if (assets is List) {
+      for (final asset in assets) {
+        if (asset is! Map || asset['name'] is! String) continue;
+        final match = RegExp(r'\+(\d+)(?=[_.])').firstMatch(asset['name']);
+        final code = match == null ? null : int.tryParse(match[1]!);
+        if (code != null) return code > versionCode;
+      }
+    }
+    final timestamp = data['created_at'];
+    final date = timestamp is String ? DateTime.tryParse(timestamp) : null;
+    return date != null && date.millisecondsSinceEpoch ~/ 1000 > buildTime;
+  }
+
   // 检查更新
   static Future<void> checkUpdate([bool isAuto = true]) async {
     if (kDebugMode) return;
@@ -28,16 +51,14 @@ abstract final class Update {
           extra: {'account': const NoAccount()},
         ),
       );
-      if (res.data is Map || res.data.isEmpty) {
+      if (res.data is! Map || res.data['tag_name'] is! String) {
         if (!isAuto) {
           SmartDialog.showToast('检查更新失败，GitHub接口未返回数据，请检查网络');
         }
         return;
       }
-      final data = res.data[0];
-      final int latest =
-          DateTime.parse(data['created_at']).millisecondsSinceEpoch ~/ 1000;
-      if (BuildConfig.buildTime >= latest) {
+      final data = res.data as Map;
+      if (!isNewerRelease(data)) {
         if (!isAuto) {
           SmartDialog.showToast('已是最新版本');
         }

@@ -8,6 +8,7 @@ import 'package:PiliPlus/models/common/video/live_quality.dart';
 import 'package:PiliPlus/pages/live_room/controller.dart';
 import 'package:PiliPlus/pages/setting/models/play_settings.dart'
     show showPlayerVolumeDialog;
+import 'package:PiliPlus/pages/setting/widgets/thread_ripper_dialog.dart';
 import 'package:PiliPlus/pages/video/widgets/header_control.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/common_btn.dart';
@@ -246,6 +247,29 @@ class _LiveHeaderControlState extends State<LiveHeaderControl>
                 padding: .zero,
                 iconColor: Colors.white,
                 itemBuilder: (context) => [
+                  PopupMenuItem(
+                    height: 35,
+                    onTap: () async {
+                      final changed = await showThreadRipperDialog(
+                        this.context,
+                        stats: plPlayerController.threadRipperTransport?.stats,
+                        reloadOnSave: true,
+                        isLive: true,
+                      );
+                      if (changed == true && mounted) {
+                        await liveController.queryLiveUrl(
+                          autoplay: player.state.playing,
+                        );
+                      }
+                    },
+                    child: const Row(
+                      spacing: 8,
+                      children: [
+                        Icon(Icons.speed, size: 17),
+                        Text('线程撕裂者', style: TextStyle(fontSize: 14)),
+                      ],
+                    ),
+                  ),
                   PopupMenuItem(
                     height: 35,
                     onTap: _showLiveStreamDialog,

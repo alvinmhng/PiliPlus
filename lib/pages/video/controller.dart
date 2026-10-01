@@ -736,6 +736,18 @@ class VideoDetailController extends GetxController
           : NetworkSource(
               videoSource: videoUrl!,
               audioSource: audioUrl,
+              videoUrls: data.dash != null
+                  ? firstVideo.playUrls.toList()
+                  : [
+                      for (final item in data.durl ?? <Durl>[])
+                        ...item.playUrls,
+                    ],
+              audioUrls:
+                  data.dash?.audio
+                      ?.where((item) => item.id == currentAudioQa?.code)
+                      .expand((item) => item.playUrls)
+                      .toList() ??
+                  const [],
             ),
       seekTo: seek,
       duration: data.timeLength == null

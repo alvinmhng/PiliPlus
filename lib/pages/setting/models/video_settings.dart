@@ -8,6 +8,7 @@ import 'package:PiliPlus/models/common/video/video_quality.dart';
 import 'package:PiliPlus/pages/setting/models/model.dart';
 import 'package:PiliPlus/pages/setting/widgets/ordered_multi_select_dialog.dart';
 import 'package:PiliPlus/pages/setting/widgets/select_dialog.dart';
+import 'package:PiliPlus/pages/setting/widgets/thread_ripper_dialog.dart';
 import 'package:PiliPlus/plugin/pl_player/models/audio_output_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/hwdec_type.dart';
 import 'package:PiliPlus/utils/filtering_text.dart';
@@ -67,6 +68,18 @@ List<SettingsModel> get videoSettings => [
     leading: const Icon(MdiIcons.cloudPlusOutline),
     getSubtitle: () => '当前使用：${Pref.liveCdnUrl ?? "默认"}',
     onTap: _showLiveCDNDialog,
+  ),
+  NormalModel(
+    title: '线程撕裂者 · 多线程加速',
+    leading: const Icon(Icons.speed),
+    getSubtitle: () {
+      final options = Pref.threadRipper;
+      return '${options.enabled ? "已开启" : "已关闭"} · ${options.mode.label} · '
+          '${options.automatic ? "自动并发" : "${options.concurrency} 线程"}，支持视频与 HLS 直播加速';
+    },
+    onTap: (context, setState) async {
+      if (await showThreadRipperDialog(context) == true) setState();
+    },
   ),
   const SwitchModel(
     title: 'CDN 测速',

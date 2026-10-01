@@ -1,4 +1,4 @@
-import 'dart:async' show StreamSubscription, Timer;
+import 'dart:async' show StreamSubscription, Timer, unawaited;
 import 'dart:convert' show ascii, utf8;
 import 'dart:io' show Platform;
 import 'dart:math' show max, min;
@@ -29,6 +29,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
 import 'package:PiliPlus/services/service_locator.dart';
+import 'package:PiliPlus/services/thread_ripper/proxy.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
@@ -69,6 +70,10 @@ typedef PlayCallback = Future<void>? Function();
 class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   Player? _videoPlayerController;
   VideoController? _videoController;
+  ThreadRipperProxy? _threadRipperTransport;
+  ThreadRipperProxy? get threadRipperTransport => _threadRipperTransport;
+  int _transportGeneration = 0;
+  Timer? _transportRecoveryTimer;
 
   static PlPlayerController? _instance;
 
@@ -769,6 +774,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     Duration? seekTo,
     Volume? volume,
   ) async {
+    final generation = ++_transportGeneration;
+    _transportRecoveryTimer?.cancel();
+    _transportRecoveryTimer = null;
     isBuffering.value = false;
     _heartDuration = 0;
     danmakuController?.clear();
@@ -799,8 +807,89 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         ...buffer,
     };
 
+    final oldTransport = _threadRipperTransport;
+    ThreadRipperProxy? transport;
     String video = dataSource.videoSource;
-    if (dataSource.audioSource case final audio? when (audio.isNotEmpty)) {
+    String? audio = dataSource.audioSource;
+    final options = Pref.threadRipper;
+    if (dataSource is NetworkSource &&
+        options.enabled &&
+        (!isLive || options.liveEnabled)) {
+      try {
+        final proxyPort = int.tryParse(Pref.systemProxyPort);
+        transport = ThreadRipperProxy(
+          options: options,
+          userAgent: BrowserUa.pc,
+          referer: HttpString.baseUrl,
+          onFallback: () {
+            if (generation != _transportGeneration || _playerCount == 0) return;
+            final resumePosition = _videoPlayerController?.state.position;
+            final resumePlaying =
+                _videoPlayerController?.state.playing == true ||
+                playerStatus.isPlaying;
+            _transportRecoveryTimer ??= Timer(
+              const Duration(milliseconds: 300),
+              () {
+                _transportRecoveryTimer = null;
+                if (generation != _transportGeneration ||
+                    _playerCount == 0 ||
+                    _processing) {
+                  return;
+                }
+                if (_videoPlayerController case final player?
+                    when player.current.isNotEmpty) {
+                  final media = player.current.last.copyWith(
+                    start: resumePosition ?? player.state.position,
+                  );
+                  unawaited(
+                    player
+                        .open(
+                          media,
+                          play: resumePlaying,
+                        )
+                        .catchError((Object _) {
+                          SmartDialog.showToast('播放路线重载失败，请刷新视频');
+                        }),
+                  );
+                }
+              },
+            );
+          },
+          upstreamProxy:
+              Pref.enableSystemProxy &&
+                  Pref.systemProxyHost.isNotEmpty &&
+                  proxyPort != null
+              ? 'PROXY ${Pref.systemProxyHost}:$proxyPort'
+              : null,
+        );
+        await transport.start();
+        if (generation != _transportGeneration || _playerCount == 0) {
+          await transport.dispose();
+          return;
+        }
+        video = isLive
+            ? transport.wrapMedia(
+                video,
+                alternatives: dataSource.videoUrls,
+                live: true,
+              )
+            : transport.wrapSource(video, alternatives: dataSource.videoUrls);
+        if (!isLive && audio != null && audio.isNotEmpty) {
+          audio = transport.wrapMedia(
+            audio,
+            alternatives: dataSource.audioUrls,
+            rewriteCdn: !Pref.disableAudioCDN,
+          );
+        }
+      } catch (_) {
+        await transport?.dispose();
+        transport = null;
+        video = dataSource.videoSource;
+        audio = dataSource.audioSource;
+        SmartDialog.showToast('多线程加速暂不可用，已使用原始播放路线');
+      }
+    }
+    if (audio != null && audio.isNotEmpty) {
       if (onlyPlayAudio.value) {
         video = audio;
       } else {
@@ -818,14 +907,30 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
 
     assert(!isLive || seekTo == null);
-    await player.open(
-      Media(
-        video,
-        start: seekTo,
-        extras: extras.isEmpty ? null : extras,
-      ),
-      play: false,
-    );
+    try {
+      await player.open(
+        Media(
+          video,
+          start: seekTo,
+          extras: extras.isEmpty ? null : extras,
+        ),
+        play: false,
+      );
+      if (generation != _transportGeneration || _playerCount == 0) {
+        await transport?.dispose();
+        return;
+      }
+      _threadRipperTransport = transport;
+    } catch (_) {
+      await transport?.dispose();
+      if (generation == _transportGeneration &&
+          identical(_threadRipperTransport, oldTransport)) {
+        _threadRipperTransport = null;
+      }
+      rethrow;
+    } finally {
+      if (oldTransport != _threadRipperTransport) await oldTransport?.dispose();
+    }
   }
 
   Future<void>? refreshPlayer() {
@@ -988,16 +1093,28 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
             event.startsWith("Failed to open file")) {
           return;
         }
+        final generation = _transportGeneration;
+        final loopbackFailure =
+            event.startsWith('Failed to open http://127.0.0.1:') ||
+            event.startsWith('Can not open external file http://127.0.0.1:');
         if (isLive) {
           if (event.startsWith('tcp: ffurl_read returned ') ||
               event.startsWith("Failed to open https://") ||
-              event.startsWith("Can not open external file https://")) {
-            Timer(const Duration(milliseconds: 3000), refreshPlayer);
+              event.startsWith("Can not open external file https://") ||
+              loopbackFailure) {
+            Timer(const Duration(milliseconds: 3000), () {
+              if (generation == _transportGeneration &&
+                  _playerCount != 0 &&
+                  !_processing) {
+                refreshPlayer();
+              }
+            });
           }
           return;
         }
         if (event.startsWith("Failed to open https://") ||
             event.startsWith("Can not open external file https://") ||
+            loopbackFailure ||
             //tcp: ffurl_read returned 0xdfb9b0bb
             //tcp: ffurl_read returned 0xffffff99
             event.startsWith('tcp: ffurl_read returned ')) {
@@ -1006,6 +1123,11 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
             const Duration(milliseconds: 10000),
             () {
               Timer(const Duration(milliseconds: 3000), () {
+                if (generation != _transportGeneration ||
+                    _playerCount == 0 ||
+                    _processing) {
+                  return;
+                }
                 // if (kDebugMode) {
                 //   debugPrint("isBuffering.value: ${isBuffering.value}");
                 // }
@@ -1547,6 +1669,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
 
     _playerCount = 0;
+    _transportGeneration++;
+    _transportRecoveryTimer?.cancel();
+    _transportRecoveryTimer = null;
+    final transport = _threadRipperTransport;
+    _threadRipperTransport = null;
+    if (transport != null) unawaited(transport.dispose());
     if (removeSafeArea) {
       showSystemBar();
     }
