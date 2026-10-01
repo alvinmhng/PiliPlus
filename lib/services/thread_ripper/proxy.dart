@@ -356,12 +356,95 @@ class ThreadRipperProxy {
     }
   }
 
+  List<Uri> _startupRoutes(_VodAsset asset, {Uri? preferred}) {
+    final routes = _ordered(asset.candidates);
+    if (routes.isEmpty) return routes;
+    final primary = routes.contains(preferred) ? preferred! : routes.first;
+    final original = asset.fallbackUrls
+        .where((uri) => uri != primary && routes.contains(uri))
+        .firstOrNull;
+    return [
+      primary,
+      ?original,
+      ...routes.where((uri) => uri != primary && uri != original),
+    ].take(4).toList();
+  }
+
+  /// Opening metadata and the first media bytes must not wait for a slow node's
+  /// full timeout. Race a backup after 200 ms; all attempts share the same pool.
+  Future<T> _raceStartup<T>(
+    List<Uri> routes,
+    _Transfer owner,
+    Future<T> Function(Uri, _Transfer) fetch,
+  ) async {
+    owner.check();
+    if (routes.isEmpty) throw const HttpException('No available media route');
+    final winner = Completer<T>();
+    final attempts = <_Transfer>[];
+    int next = 0;
+    int pending = 0;
+
+    void launch() {
+      if (_closed ||
+          owner.cancelled ||
+          winner.isCompleted ||
+          next >= routes.length) {
+        return;
+      }
+      final uri = routes[next++];
+      final attempt = _newTransfer();
+      attempts.add(attempt);
+      pending++;
+      unawaited(
+        _pool
+            .run(attempt, () => fetch(uri, attempt))
+            .then<void>(
+              (value) {
+                pending--;
+                if (!winner.isCompleted) winner.complete(value);
+              },
+              onError: (Object error, StackTrace stack) {
+                pending--;
+                if (_closed || owner.cancelled || winner.isCompleted) return;
+                _retries++;
+                _failure(uri);
+                launch();
+                if (pending == 0 && next >= routes.length) {
+                  winner.completeError(error, stack);
+                }
+              },
+            )
+            .whenComplete(() => _endTransfer(attempt)),
+      );
+    }
+
+    launch();
+    final hedge = Timer.periodic(
+      const Duration(milliseconds: 200),
+      (_) => launch(),
+    );
+    try {
+      return await Future.any([
+        winner.future,
+        owner.done.future.then<T>(
+          (_) => throw StateError('Transfer cancelled'),
+        ),
+      ]);
+    } finally {
+      hedge.cancel();
+      for (final attempt in attempts) {
+        attempt.cancel();
+      }
+    }
+  }
+
   Future<_MediaInfo?> _probe(_VodAsset asset, _Transfer transfer) async {
-    for (final uri in _ordered(asset.candidates).take(4)) {
-      transfer.check();
-      try {
-        final info = await _pool.run(transfer, () async {
-          final upstream = await _open(transfer, uri, range: 'bytes=0-0');
+    try {
+      return await _raceStartup(
+        _startupRoutes(asset),
+        transfer,
+        (uri, attempt) async {
+          final upstream = await _open(attempt, uri, range: 'bytes=0-0');
           try {
             final response = upstream.response;
             final range = MediaContentRange.parse(
@@ -372,70 +455,78 @@ class ThreadRipperProxy {
                 range.start != 0 ||
                 range.end != 0) {
               _failure(uri, status: response.statusCode);
-              return null;
+              throw const FormatException('Invalid metadata range');
             }
-            await _read(upstream, transfer, 1, expected: 1);
+            await _read(upstream, attempt, 1, expected: 1);
             return _MediaInfo(
               range.total,
               response.headers.value(HttpHeaders.contentTypeHeader) ??
                   'application/octet-stream',
+              uri,
             );
           } finally {
             upstream.request.abort();
-            transfer.requests.remove(upstream.request);
+            attempt.requests.remove(upstream.request);
           }
-        });
-        if (info != null) return info;
-      } catch (_) {
-        if (transfer.cancelled || _closed) rethrow;
-        _failure(uri);
-      }
+        },
+      );
+    } catch (_) {
+      if (transfer.cancelled || _closed) rethrow;
+      return null;
     }
-    return null;
   }
 
   Future<Uint8List> _chunk(
     _VodAsset asset,
     MediaByteRange range,
     int total,
-    _Transfer transfer,
-  ) async {
-    final candidates = _ordered(asset.candidates);
+    _Transfer transfer, {
+    Uri? startupRoute,
+  }) async {
+    Future<Uint8List> fetch(Uri uri, _Transfer attempt) async {
+      final watch = Stopwatch()..start();
+      final upstream = await _open(attempt, uri, range: range.header);
+      try {
+        final response = upstream.response;
+        final actual = MediaContentRange.parse(
+          response.headers.value(HttpHeaders.contentRangeHeader),
+        );
+        if (response.statusCode != HttpStatus.partialContent ||
+            actual == null ||
+            actual.start != range.start ||
+            actual.end != range.end ||
+            actual.total != total ||
+            (response.contentLength >= 0 &&
+                response.contentLength != range.length)) {
+          _failure(uri, status: response.statusCode);
+          throw const FormatException('Invalid content range');
+        }
+        final bytes = await _read(
+          upstream,
+          attempt,
+          range.length,
+          expected: range.length,
+        );
+        _success(uri, bytes.length, watch.elapsedMilliseconds);
+        return bytes;
+      } finally {
+        upstream.request.abort();
+        attempt.requests.remove(upstream.request);
+      }
+    }
+
+    if (startupRoute != null) {
+      return _raceStartup(
+        _startupRoutes(asset, preferred: startupRoute),
+        transfer,
+        fetch,
+      );
+    }
     Object? failure;
-    for (final uri in candidates.take(4)) {
+    for (final uri in _ordered(asset.candidates).take(4)) {
       transfer.check();
       try {
-        return await _pool.run(transfer, () async {
-          final watch = Stopwatch()..start();
-          final upstream = await _open(transfer, uri, range: range.header);
-          try {
-            final response = upstream.response;
-            final actual = MediaContentRange.parse(
-              response.headers.value(HttpHeaders.contentRangeHeader),
-            );
-            if (response.statusCode != HttpStatus.partialContent ||
-                actual == null ||
-                actual.start != range.start ||
-                actual.end != range.end ||
-                actual.total != total ||
-                (response.contentLength >= 0 &&
-                    response.contentLength != range.length)) {
-              _failure(uri, status: response.statusCode);
-              throw const FormatException('Invalid content range');
-            }
-            final bytes = await _read(
-              upstream,
-              transfer,
-              range.length,
-              expected: range.length,
-            );
-            _success(uri, bytes.length, watch.elapsedMilliseconds);
-            return bytes;
-          } finally {
-            upstream.request.abort();
-            transfer.requests.remove(upstream.request);
-          }
-        });
+        return await _pool.run(transfer, () => fetch(uri, transfer));
       } catch (error) {
         if (transfer.cancelled || _closed) rethrow;
         failure = error;
@@ -466,7 +557,9 @@ class ThreadRipperProxy {
     }
     final header = request.headers.value(HttpHeaders.rangeHeader);
     final range = MediaByteRange.fromHeader(header, info.total);
-    final response = request.response;
+    // Send short demuxer reads immediately instead of retaining them in Dart's
+    // HTTP output buffer until another range finishes.
+    final response = request.response..bufferOutput = false;
     if (range == null) {
       response
         ..statusCode = HttpStatus.requestedRangeNotSatisfiable
@@ -489,6 +582,24 @@ class ThreadRipperProxy {
     int cursor = range.start;
     bool committed = false;
     try {
+      // Give the demuxer a small validated prefix before filling the parallel
+      // window. Waiting for 16–32 full chunks here delays every source open.
+      final firstEnd = math.min<int>(
+        cursor + math.min<int>(chunkBytes, 32 * 1024) - 1,
+        range.end,
+      );
+      final first = await _chunk(
+        asset,
+        MediaByteRange(cursor, firstEnd),
+        info.total,
+        transfer,
+        startupRoute: info.route,
+      );
+      transfer.check();
+      committed = true;
+      response.add(first);
+      await response.flush();
+      cursor = firstEnd + 1;
       while (cursor <= range.end) {
         transfer.check();
         final batch = <MediaByteRange>[];
@@ -498,21 +609,22 @@ class ThreadRipperProxy {
           cursor = end + 1;
         }
         final watch = Stopwatch()..start();
-        // At most 8 MiB per consumer in flight; preserve order even when a later
-        // request finishes first. flush provides downstream backpressure.
-        final chunks = await Future.wait(
-          batch.map((piece) => _chunk(asset, piece, info.total, transfer)),
-        );
-        transfer.check();
-        committed = true;
+        // At most 8 MiB per consumer in flight. Observe every future immediately
+        // so a later failure is handled even while an earlier chunk is pending.
+        final chunks = batch.map((piece) {
+          final future = _chunk(asset, piece, info.total, transfer);
+          unawaited(future.then<void>((_) {}, onError: (Object _) {}));
+          return future;
+        }).toList();
+        int bytes = 0;
         for (final chunk in chunks) {
-          response.add(chunk);
+          final data = await chunk;
+          transfer.check();
+          response.add(data);
+          await response.flush();
+          bytes += data.length;
         }
-        await response.flush();
-        _tune(
-          chunks.fold(0, (sum, chunk) => sum + chunk.length),
-          watch.elapsedMilliseconds,
-        );
+        _tune(bytes, watch.elapsedMilliseconds);
       }
     } catch (_) {
       if (!transfer.cancelled && !_closed) {
@@ -665,9 +777,10 @@ class _VodAsset extends _Asset {
 }
 
 class _MediaInfo {
-  const _MediaInfo(this.total, this.contentType);
+  const _MediaInfo(this.total, this.contentType, this.route);
   final int total;
   final String contentType;
+  final Uri route;
 }
 
 class _RouteHealth {

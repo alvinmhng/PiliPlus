@@ -19,6 +19,8 @@ class _Node {
     this.probeDelay = Duration.zero,
     this.segmentDelay = Duration.zero,
     this.chunkDelay = const Duration(milliseconds: 10),
+    this.probeGate,
+    this.beforeChunk,
   });
   final bool ignoreRange;
   final bool corruptChunks;
@@ -26,6 +28,8 @@ class _Node {
   final Duration probeDelay;
   final Duration segmentDelay;
   final Duration chunkDelay;
+  final Future<void>? probeGate;
+  final Future<void> Function(int start, int end)? beforeChunk;
   late HttpServer server;
   int active = 0;
   int peak = 0;
@@ -74,6 +78,7 @@ class _Node {
         if (range == 'bytes=0-0') {
           if (!probeStarted.isCompleted) probeStarted.complete();
           await Future<void>.delayed(probeDelay);
+          await probeGate;
         }
         final match = range == null
             ? null
@@ -101,6 +106,7 @@ class _Node {
           await Future<void>.delayed(
             start % 4096 == 0 ? chunkDelay * 2 : chunkDelay,
           );
+          await beforeChunk?.call(start, end);
         }
         response
           ..contentLength = end - start + 1
@@ -319,6 +325,130 @@ void main() {
       expect(results[1].$2, _media);
       expect(node.peak, lessThanOrEqualTo(4));
     });
+
+    test(
+      'delivers startup bytes while later ranges are still pending',
+      () async {
+        final releaseLater = Completer<void>();
+        final laterStarted = Completer<void>();
+        final delayed = _Node(
+          beforeChunk: (start, end) async {
+            if (start >= 2048) {
+              if (!laterStarted.isCompleted) laterStarted.complete();
+              await releaseLater.future;
+            }
+          },
+        );
+        await delayed.start();
+        try {
+          final first = Completer<List<int>>();
+          final delivered = BytesBuilder(copy: false);
+          final request = await client.getUrl(
+            Uri.parse(proxy.addVod([delayed.uri('/video')])),
+          );
+          final finished = request.close().then((response) async {
+            await for (final chunk in response) {
+              delivered.add(chunk);
+              if (!first.isCompleted && delivered.length >= 2048) {
+                first.complete(delivered.toBytes());
+              }
+            }
+          });
+          final assertion = expectLater(
+            first.future.timeout(const Duration(seconds: 1)),
+            completion(_media.sublist(0, 2048)),
+          );
+          try {
+            await laterStarted.future.timeout(const Duration(seconds: 2));
+            await assertion;
+          } finally {
+            releaseLater.complete();
+            await finished;
+          }
+          expect(delivered.takeBytes(), _media);
+          expect(delayed.peak, lessThanOrEqualTo(4));
+        } finally {
+          if (!releaseLater.isCompleted) releaseLater.complete();
+          await delayed.close();
+        }
+      },
+    );
+
+    test('slow metadata does not block an available original route', () async {
+      final releaseProbe = Completer<void>();
+      final delayed = _Node(probeGate: releaseProbe.future);
+      await delayed.start();
+      try {
+        final url = proxy.addVod(
+          [
+            delayed.uri('/video'),
+            delayed.uri('/video-backup-1'),
+            delayed.uri('/video-backup-2'),
+            delayed.uri('/video-backup-3'),
+            node.uri('/video'),
+          ],
+          fallbackUrls: [node.uri('/video')],
+        );
+        final assertion = expectLater(
+          _get(client, url).timeout(const Duration(seconds: 1)),
+          completion(
+            isA<(HttpClientResponse, Uint8List)>().having(
+              (result) => result.$2,
+              'media bytes',
+              _media,
+            ),
+          ),
+        );
+        try {
+          await delayed.probeStarted.future;
+          await assertion;
+        } finally {
+          releaseProbe.complete();
+        }
+      } finally {
+        if (!releaseProbe.isCompleted) releaseProbe.complete();
+        await delayed.close();
+      }
+    });
+
+    test(
+      'slow first media bytes race a working backup after metadata',
+      () async {
+        final releaseFirstChunk = Completer<void>();
+        final delayed = _Node(
+          beforeChunk: (start, end) async {
+            if (start == 0) await releaseFirstChunk.future;
+          },
+        );
+        await delayed.start();
+        try {
+          final url = proxy.addVod([
+            delayed.uri('/video'),
+            node.uri('/video'),
+          ]);
+          final assertion = expectLater(
+            _get(client, url).timeout(const Duration(seconds: 1)),
+            completion(
+              isA<(HttpClientResponse, Uint8List)>().having(
+                (result) => result.$2,
+                'media bytes',
+                _media,
+              ),
+            ),
+          );
+          try {
+            await delayed.chunkStarted.future;
+            await assertion;
+          } finally {
+            releaseFirstChunk.complete();
+          }
+          expect(node.seenRanges, contains((0, 1023)));
+        } finally {
+          if (!releaseFirstChunk.isCompleted) releaseFirstChunk.complete();
+          await delayed.close();
+        }
+      },
+    );
 
     test(
       'HEAD, suffix seeks, and invalid ranges follow HTTP semantics',
