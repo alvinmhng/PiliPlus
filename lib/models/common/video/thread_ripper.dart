@@ -1,7 +1,9 @@
 import 'dart:math' as math;
 
+export 'package:PiliPlus/services/thread_ripper/auto_concurrency.dart';
+
 /// Native adaptation of Bilibili-thread-ripper's Range and CDN logic.
-/// See third_party/Bilibili-thread-ripper.LICENSE.
+/// See assets/licenses/Bilibili-thread-ripper.LICENSE.
 enum ThreadRipperCdnMode {
   mainland('大陆 CDN'),
   overseas('海外 CDN'),
@@ -99,20 +101,26 @@ abstract final class ThreadRipperCdn {
   static bool isPeer(Uri uri) =>
       uri.host.contains('.mcdn.') || uri.host.split('.').first.contains('302');
 
-  /// Only replace ordinary CDN paths; peer resource paths have different signing.
+  /// Canonical upgcxcode paths can move between CDNs, including peer donors.
+  /// Opaque peer resource paths have different signing and stay native.
   static List<Uri> resolve(
     Iterable<String> urls,
     ThreadRipperOptions options, {
     bool live = false,
   }) {
-    final originals = urls
+    final accepted = urls
         .map(Uri.tryParse)
         .whereType<Uri>()
         .where(live ? isLivePlaylist : isMedia)
-        .where((uri) => !isPeer(uri))
         .toSet()
         .toList();
-    if (originals.isEmpty) return const [];
+    final originals = accepted.where((uri) => !isPeer(uri)).toList();
+    final donors = accepted
+        .where(
+          (uri) => live ? !isPeer(uri) : uri.path.startsWith('/upgcxcode/'),
+        )
+        .toList();
+    if (originals.isEmpty && donors.isEmpty) return const [];
     final custom =
         options.mode == ThreadRipperCdnMode.custom &&
         options.customHosts.isNotEmpty;
@@ -138,9 +146,6 @@ abstract final class ThreadRipperCdn {
             : hosts.contains(uri.host))
           uri,
     };
-    final donors = originals
-        .where((uri) => live || uri.path.startsWith('/upgcxcode/'))
-        .toList();
     for (final host in hosts) {
       for (final donor in donors) {
         // replace preserves the original signed path and raw query string.
@@ -149,52 +154,6 @@ abstract final class ThreadRipperCdn {
     }
     if (!custom) result.addAll(originals);
     return result.toList(growable: false);
-  }
-}
-
-/// Throughput trials keep the smallest useful automatic limit. Server pushback
-/// immediately reduces load and prevents another increase for 90 seconds.
-class ThreadRipperConcurrency {
-  ThreadRipperConcurrency({int concurrency = 0})
-    : automatic = concurrency == 0,
-      limit = concurrency == 0 ? 16 : concurrency;
-
-  final bool automatic;
-  int limit;
-  double _baseline = 0;
-  int _trialFrom = 0;
-  int _tunedAt = 0;
-  int _restUntil = 0;
-
-  bool observe(int bytes, int elapsedMilliseconds, int now) {
-    if (!automatic ||
-        elapsedMilliseconds <= 0 ||
-        now - _tunedAt < 5000 ||
-        now < _restUntil) {
-      return false;
-    }
-    final before = limit;
-    final speed = bytes * 1000 / elapsedMilliseconds;
-    if (_trialFrom != 0) {
-      if (speed < _baseline * 1.1) {
-        limit = _trialFrom;
-        _restUntil = now + 30000;
-      }
-      _trialFrom = 0;
-    } else if (_baseline > 0 && limit < 32) {
-      _trialFrom = limit;
-      limit = math.min(32, limit * 2);
-    }
-    _baseline = speed;
-    _tunedAt = now;
-    return before != limit;
-  }
-
-  void throttle(int now) {
-    if (!automatic) return;
-    limit = math.max(8, limit ~/ 2);
-    _trialFrom = 0;
-    _restUntil = now + 90000;
   }
 }
 

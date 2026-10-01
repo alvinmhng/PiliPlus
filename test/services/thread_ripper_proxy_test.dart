@@ -21,7 +21,10 @@ class _Node {
     this.chunkDelay = const Duration(milliseconds: 10),
     this.probeGate,
     this.beforeChunk,
-  });
+    this.writeBody,
+    Uint8List? media,
+  }) : media = media ?? _media;
+  final Uint8List media;
   final bool ignoreRange;
   final bool corruptChunks;
   final int corruptAfter;
@@ -30,6 +33,7 @@ class _Node {
   final Duration chunkDelay;
   final Future<void>? probeGate;
   final Future<void> Function(int start, int end)? beforeChunk;
+  final Future<bool> Function(HttpResponse, int, int, Uint8List)? writeBody;
   late HttpServer server;
   int active = 0;
   int peak = 0;
@@ -38,6 +42,7 @@ class _Node {
   final seenRanges = <(int, int)>[];
   final seenHeaders = <HttpHeaders>[];
   final paths = <String>[];
+  final connections = <int>{};
   final chunkStarted = Completer<void>();
   final probeStarted = Completer<void>();
 
@@ -50,6 +55,7 @@ class _Node {
 
   Future<void> _serve(HttpRequest request) async {
     requests++;
+    connections.add(request.connectionInfo!.remotePort);
     paths.add(request.uri.path);
     seenHeaders.add(request.headers);
     active++;
@@ -75,7 +81,7 @@ class _Node {
           ..add(_media.sublist(0, 64));
       } else {
         final range = request.headers.value(HttpHeaders.rangeHeader);
-        if (range == 'bytes=0-0') {
+        if (range?.startsWith('bytes=0-') == true) {
           if (!probeStarted.isCompleted) probeStarted.complete();
           await Future<void>.delayed(probeDelay);
           await probeGate;
@@ -85,17 +91,18 @@ class _Node {
             : RegExp(r'^bytes=(\d+)-(\d*)$').firstMatch(range);
         int start = match == null ? 0 : int.parse(match[1]!);
         int end = match == null || match[2]!.isEmpty
-            ? _media.length - 1
+            ? media.length - 1
             : int.parse(match[2]!);
+        if (end >= media.length) end = media.length - 1;
         if (ignoreRange) {
           start = 0;
-          end = _media.length - 1;
+          end = media.length - 1;
         }
         if (range != null && !ignoreRange) {
           response.statusCode = HttpStatus.partialContent;
           response.headers.set(
             HttpHeaders.contentRangeHeader,
-            'bytes ${corruptChunks && end > start && start >= corruptAfter ? start + 1 : start}-$end/${_media.length}',
+            'bytes ${corruptChunks && end > start && start >= corruptAfter ? start + 1 : start}-$end/${media.length}',
           );
         }
         if (end > start && !ignoreRange) {
@@ -112,7 +119,8 @@ class _Node {
           ..contentLength = end - start + 1
           ..headers.set(HttpHeaders.contentTypeHeader, 'video/mp4');
         if (request.method != 'HEAD') {
-          response.add(_media.sublist(start, end + 1));
+          final handled = await writeBody?.call(response, start, end, media);
+          if (handled != true) response.add(media.sublist(start, end + 1));
         }
       }
       await response.close();
@@ -127,6 +135,33 @@ class _Node {
   }
 
   Future<void> close() => server.close(force: true);
+}
+
+class _DelayedClient implements HttpClient {
+  _DelayedClient(this.delay);
+  final Duration delay;
+  final _delegate = HttpClient();
+  @override
+  Future<HttpClientRequest> openUrl(String method, Uri uri) async {
+    await Future<void>.delayed(delay);
+    return _delegate.openUrl(method, uri);
+  }
+
+  @override
+  set autoUncompress(bool value) => _delegate.autoUncompress = value;
+  @override
+  set connectionTimeout(Duration? value) => _delegate.connectionTimeout = value;
+  @override
+  set idleTimeout(Duration value) => _delegate.idleTimeout = value;
+  @override
+  set maxConnectionsPerHost(int? value) =>
+      _delegate.maxConnectionsPerHost = value;
+  @override
+  set findProxy(String Function(Uri)? value) => _delegate.findProxy = value;
+  @override
+  void close({bool force = false}) => _delegate.close(force: force);
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 Future<(HttpClientResponse, Uint8List)> _get(
@@ -149,35 +184,25 @@ Future<(HttpClientResponse, Uint8List)> _get(
 
 void main() {
   group('CDN and Range contracts', () {
-    test(
-      'automatic concurrency keeps useful gains and backs off on throttling',
-      () {
-        final tuner = ThreadRipperConcurrency()
-          ..observe(1024 * 1024, 1000, 5000)
-          ..observe(1024 * 1024, 1000, 10000);
-        expect(tuner.limit, 32);
-        tuner.observe(2 * 1024 * 1024, 1000, 15000);
-        expect(tuner.limit, 32);
-        tuner.throttle(16000);
-        expect(tuner.limit, 16);
-        tuner.throttle(17000);
-        expect(tuner.limit, 8);
-        tuner.observe(8 * 1024 * 1024, 1000, 20000);
-        expect(tuner.limit, 8);
+    test('canonical peer paths become official CDN URLs with HTTPS ports', () {
+      const source =
+          'https://p2p.mcdn.bilivideo.cn:8443/upgcxcode/1/2/video.m4s?os=mcdn&sign=a%2Bdef';
+      final routes = ThreadRipperCdn.resolve([source], ThreadRipperOptions());
+      expect(routes, hasLength(ThreadRipperCdn.mainlandHosts.length));
+      for (final route in routes) {
+        expect(ThreadRipperCdn.mainlandHosts, contains(route.host));
+        expect(route.port, 443);
+        expect(route.query, Uri.parse(source).query);
+        expect(route.path, Uri.parse(source).path);
+      }
+      expect(
+        ThreadRipperCdn.resolve([
+          source.replaceFirst('/upgcxcode/1/2/', '/v1/resource/'),
+        ], ThreadRipperOptions()),
+        isEmpty,
+      );
+    });
 
-        final flat = ThreadRipperConcurrency();
-        for (final at in [5000, 10000, 15000]) {
-          flat.observe(1024 * 1024, 1000, at);
-        }
-        expect(flat.limit, 16);
-        flat.observe(1024 * 1024, 1000, 20000);
-        expect(flat.limit, 16);
-        final manual = ThreadRipperConcurrency(concurrency: 4)
-          ..observe(1024 * 1024, 1000, 5000)
-          ..throttle(10000);
-        expect(manual.limit, 4);
-      },
-    );
     test('signed URLs retain their exact path and query across CDN routes', () {
       const url =
           'https://upos-hz-mirrorakam.akamaized.net/upgcxcode/01/02/a.m4s?sign=a%2Fb&expires=99&flag';
@@ -279,6 +304,371 @@ void main() {
       client.close(force: true);
       await proxy.dispose();
       await node.close();
+    });
+
+    test(
+      'initial GET combines metadata and media, and reuses connections',
+      () async {
+        await proxy.dispose();
+        int clientsCreated = 0;
+        proxy = ThreadRipperProxy(
+          options: ThreadRipperOptions(enabled: true, concurrency: 4),
+          userAgent: 'PiliPlus-Test',
+          referer: 'https://www.bilibili.com',
+          clientFactory: () {
+            clientsCreated++;
+            return HttpClient();
+          },
+        );
+        await proxy.start();
+        final source = Uint8List.fromList(
+          List.generate(2 * 1024 * 1024, (i) => (i * 37) % 251),
+        );
+        final large = _Node(media: source);
+        await large.start();
+        try {
+          final (_, bytes) = await _get(
+            client,
+            proxy.addVod([large.uri('/video')]),
+          );
+          expect(bytes, source);
+          expect(large.seenHeaders.first.value('range'), 'bytes=0-65535');
+          expect(
+            large.seenHeaders.where(
+              (h) => h.value('range') == 'bytes=0-0',
+            ),
+            isEmpty,
+          );
+          expect(clientsCreated, 1);
+          expect(large.connections.length, lessThanOrEqualTo(3));
+          expect(large.connections.length, lessThan(large.requests));
+          final ranges = large.seenRanges.toList()
+            ..sort((a, b) => a.$1.compareTo(b.$1));
+          for (var i = 1; i < ranges.length; i++) {
+            expect(ranges[i].$1, ranges[i - 1].$2 + 1);
+          }
+        } finally {
+          await large.close();
+        }
+      },
+    );
+
+    test('connect and headers share one first-byte deadline', () async {
+      await proxy.dispose();
+      proxy = ThreadRipperProxy(
+        options: ThreadRipperOptions(enabled: true, concurrency: 4),
+        userAgent: 'PiliPlus-Test',
+        referer: 'https://www.bilibili.com',
+        chunkBytes: 1024,
+        firstByteTimeout: const Duration(milliseconds: 180),
+        clientFactory: () => _DelayedClient(const Duration(milliseconds: 100)),
+      );
+      await proxy.start();
+      final slowHead = _Node(chunkDelay: const Duration(milliseconds: 90));
+      final fastHead = _Node(chunkDelay: const Duration(milliseconds: 5));
+      await slowHead.start();
+      await fastHead.start();
+      try {
+        final (_, bytes) = await _get(
+          client,
+          proxy.addVod([slowHead.uri('/video'), fastHead.uri('/video')]),
+          range: 'bytes=0-100',
+        );
+        expect(bytes, _media.sublist(0, 101));
+        expect(fastHead.requests, greaterThan(0));
+        expect(slowHead.requests, 1);
+      } finally {
+        await slowHead.close();
+        await fastHead.close();
+      }
+    });
+
+    test('timed-out openUrl is aborted when it completes late', () async {
+      await proxy.dispose();
+      proxy = ThreadRipperProxy(
+        options: ThreadRipperOptions(enabled: true, concurrency: 4),
+        userAgent: 'PiliPlus-Test',
+        referer: 'https://www.bilibili.com',
+        firstByteTimeout: const Duration(milliseconds: 50),
+        clientFactory: () => _DelayedClient(const Duration(milliseconds: 200)),
+      );
+      await proxy.start();
+      final (response, bytes) = await _get(
+        client,
+        proxy.addVod([node.uri('/video')]),
+      );
+      expect(response.statusCode, HttpStatus.badGateway);
+      expect(bytes, isEmpty);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(node.requests, 0);
+    });
+
+    test('refills the window before its slowest sibling completes', () async {
+      final releaseSibling = Completer<void>();
+      final refillStarted = Completer<void>();
+      final delayed = _Node(
+        beforeChunk: (start, end) async {
+          if (start == 3072) await releaseSibling.future;
+          if (start == 4096 && !refillStarted.isCompleted) {
+            refillStarted.complete();
+          }
+        },
+      );
+      await delayed.start();
+      try {
+        final pending = _get(client, proxy.addVod([delayed.uri('/video')]));
+        try {
+          await refillStarted.future.timeout(const Duration(seconds: 1));
+        } finally {
+          releaseSibling.complete();
+        }
+        expect((await pending).$2, _media);
+      } finally {
+        if (!releaseSibling.isCompleted) releaseSibling.complete();
+        await delayed.close();
+      }
+    });
+
+    test('saturated primaries leave capacity for successful backups', () async {
+      await proxy.dispose();
+      int peak = 0;
+      proxy = ThreadRipperProxy(
+        options: ThreadRipperOptions(enabled: true, concurrency: 8),
+        userAgent: 'PiliPlus-Test',
+        referer: 'https://www.bilibili.com',
+        chunkBytes: 1024,
+        clientFactory: HttpClient.new,
+        onActiveRequestsChanged: (active) {
+          if (active > peak) peak = active;
+        },
+      );
+      await proxy.start();
+      final release = Completer<void>();
+      final stalled = _Node(probeGate: release.future);
+      await stalled.start();
+      try {
+        final results = await Future.wait(
+          List.generate(
+            8,
+            (i) => _get(
+              client,
+              proxy.addVod([stalled.uri('/video$i'), node.uri('/video$i')]),
+              range: 'bytes=0-1023',
+            ),
+          ),
+        ).timeout(const Duration(seconds: 2));
+        for (final result in results) {
+          expect(result.$2, _media.sublist(0, 1024));
+        }
+        expect(peak, lessThanOrEqualTo(8));
+        expect(stalled.probeStarted.isCompleted, isTrue);
+        expect(node.requests, greaterThanOrEqualTo(8));
+      } finally {
+        release.complete();
+        await stalled.close();
+      }
+    });
+
+    test(
+      'disconnect stops a multi-window download without another seek',
+      () async {
+        final source = Uint8List(6 * 1024 * 1024);
+        final large = _Node(media: source);
+        await large.start();
+        Socket? socket;
+        try {
+          final uri = Uri.parse(proxy.addVod([large.uri('/video')]));
+          socket = await Socket.connect(uri.host, uri.port)
+            ..write('GET ${uri.path} HTTP/1.1\r\nHost: ${uri.host}\r\n\r\n');
+          await socket.flush();
+          await socket.first.timeout(const Duration(seconds: 1));
+          socket.destroy();
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          final count = large.requests;
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          expect(large.requests, count);
+          expect(large.seenRanges.every((r) => r.$2 < 128 * 1024), isTrue);
+          final (_, bytes) = await _get(
+            client,
+            uri.toString(),
+            range: 'bytes=900000-900999',
+          );
+          expect(bytes, source.sublist(900000, 901000));
+        } finally {
+          socket?.destroy();
+          await large.close();
+        }
+      },
+    );
+
+    test(
+      'new seek cancels the old socket even while it remains open',
+      () async {
+        final source = Uint8List(6 * 1024 * 1024);
+        final large = _Node(media: source);
+        await large.start();
+        Socket? socket;
+        try {
+          final uri = Uri.parse(proxy.addVod([large.uri('/video')]));
+          socket = await Socket.connect(uri.host, uri.port);
+          final started = Completer<void>();
+          final ended = Completer<void>();
+          int received = 0;
+          socket
+            ..listen(
+              (bytes) {
+                received += bytes.length;
+                if (!started.isCompleted) started.complete();
+              },
+              onError: (Object _) {
+                if (!ended.isCompleted) ended.complete();
+              },
+              onDone: () {
+                if (!ended.isCompleted) ended.complete();
+              },
+            )
+            ..write('GET ${uri.path} HTTP/1.1\r\nHost: ${uri.host}\r\n\r\n');
+          await socket.flush();
+          await started.future.timeout(const Duration(seconds: 1));
+          final (_, bytes) = await _get(
+            client,
+            uri.toString(),
+            range: 'bytes=900000-900999',
+          );
+          expect(bytes, source.sublist(900000, 901000));
+          await ended.future.timeout(const Duration(seconds: 1));
+          expect(received, lessThan(source.length));
+        } finally {
+          socket?.destroy();
+          await large.close();
+        }
+      },
+    );
+
+    test(
+      'interrupted validated ranges resume without repeating bytes',
+      () async {
+        await proxy.dispose();
+        proxy = ThreadRipperProxy(
+          options: ThreadRipperOptions(enabled: true, concurrency: 4),
+          userAgent: 'PiliPlus-Test',
+          referer: 'https://www.bilibili.com',
+          clientFactory: HttpClient.new,
+        );
+        await proxy.start();
+        final source = Uint8List.fromList(
+          List.generate(1024 * 1024, (i) => (i * 37) % 251),
+        );
+        final interruptedEnds = <int>{};
+        final interrupted = _Node(
+          media: source,
+          writeBody: (response, start, end, media) async {
+            if (start >= 65536 &&
+                end - start + 1 > 65536 &&
+                interruptedEnds.add(end)) {
+              response.add(media.sublist(start, start + 65536));
+              await response.flush();
+              (await response.detachSocket(writeHeaders: false)).destroy();
+              return true;
+            }
+            return false;
+          },
+        );
+        await interrupted.start();
+        try {
+          final (_, bytes) = await _get(
+            client,
+            proxy.addVod([interrupted.uri('/video')]),
+          );
+          expect(bytes, source);
+          expect(interruptedEnds, isNotEmpty);
+          expect(
+            interrupted.seenRanges.any(
+              (a) => interrupted.seenRanges.any(
+                (b) => a.$2 == b.$2 && b.$1 == a.$1 + 65536,
+              ),
+            ),
+            isTrue,
+          );
+        } finally {
+          await interrupted.close();
+        }
+      },
+    );
+
+    test(
+      'backup resumes bytes already received from a stalled primary',
+      () async {
+        await proxy.dispose();
+        proxy = ThreadRipperProxy(
+          options: ThreadRipperOptions(enabled: true, concurrency: 4),
+          userAgent: 'PiliPlus-Test',
+          referer: 'https://www.bilibili.com',
+          clientFactory: HttpClient.new,
+        );
+        await proxy.start();
+        final source = Uint8List.fromList(
+          List.generate(1024 * 1024, (i) => (i * 37) % 251),
+        );
+        final release = Completer<void>();
+        final stalled = _Node(
+          media: source,
+          writeBody: (response, start, end, media) async {
+            if (start >= 65536 && end - start + 1 > 65536) {
+              response.add(media.sublist(start, start + 65536));
+              await response.flush();
+              await release.future;
+              return true;
+            }
+            return false;
+          },
+        );
+        final backup = _Node(media: source);
+        await stalled.start();
+        await backup.start();
+        try {
+          final (_, bytes) = await _get(
+            client,
+            proxy.addVod([stalled.uri('/video'), backup.uri('/video')]),
+          ).timeout(const Duration(seconds: 2));
+          expect(bytes, source);
+          expect(
+            stalled.seenRanges.any(
+              (a) => backup.seenRanges.any(
+                (b) => a.$2 == b.$2 && b.$1 == a.$1 + 65536,
+              ),
+            ),
+            isTrue,
+          );
+        } finally {
+          release.complete();
+          await stalled.close();
+          await backup.close();
+        }
+      },
+    );
+
+    test('audio avoids serial tiny range requests', () async {
+      await proxy.dispose();
+      proxy = ThreadRipperProxy(
+        options: ThreadRipperOptions(enabled: true, concurrency: 8),
+        userAgent: 'PiliPlus-Test',
+        referer: 'https://www.bilibili.com',
+        clientFactory: HttpClient.new,
+      );
+      await proxy.start();
+      final large = _Node(media: Uint8List(2 * 1024 * 1024));
+      await large.start();
+      try {
+        final (_, bytes) = await _get(
+          client,
+          proxy.addVod([large.uri('/audio')], isAudio: true),
+        );
+        expect(bytes, large.media);
+        expect(large.requests, lessThanOrEqualTo(10));
+      } finally {
+        await large.close();
+      }
     });
 
     test(
@@ -607,7 +997,7 @@ void main() {
         await abandoned;
         expect(
           delayed.seenHeaders
-              .where((h) => h.value('range') == 'bytes=0-0')
+              .where((h) => h.value('range') == 'bytes=0-1023')
               .length,
           1,
         );

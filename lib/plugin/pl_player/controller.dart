@@ -13,6 +13,7 @@ import 'package:PiliPlus/models/common/account_type.dart';
 import 'package:PiliPlus/models/common/audio_normalization.dart';
 import 'package:PiliPlus/models/common/super_resolution_type.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
+import 'package:PiliPlus/models/common/video/thread_ripper.dart';
 import 'package:PiliPlus/models/user/danmaku_rule.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
 import 'package:PiliPlus/models_new/video/video_shot/data.dart';
@@ -71,6 +72,8 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   Player? _videoPlayerController;
   VideoController? _videoController;
   ThreadRipperProxy? _threadRipperTransport;
+  final _threadRipperConcurrency = ThreadRipperConcurrency();
+  bool _threadRipperRestarting = false;
   ThreadRipperProxy? get threadRipperTransport => _threadRipperTransport;
   int _transportGeneration = 0;
   Timer? _transportRecoveryTimer;
@@ -819,6 +822,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         final proxyPort = int.tryParse(Pref.systemProxyPort);
         transport = ThreadRipperProxy(
           options: options,
+          concurrencyController: _threadRipperConcurrency,
           userAgent: BrowserUa.pc,
           referer: HttpString.baseUrl,
           onFallback: () {
@@ -841,6 +845,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
                   final media = player.current.last.copyWith(
                     start: resumePosition ?? player.state.position,
                   );
+                  _threadRipperRestarting = true;
                   unawaited(
                     player
                         .open(
@@ -879,6 +884,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
             audio,
             alternatives: dataSource.audioUrls,
             rewriteCdn: !Pref.disableAudioCDN,
+            isAudio: true,
           );
         }
       } catch (_) {
@@ -907,6 +913,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
 
     assert(!isLive || seekTo == null);
+    _threadRipperRestarting = true;
     try {
       await player.open(
         Media(
@@ -940,6 +947,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     if (_videoPlayerController case final ctr? when (ctr.current.isNotEmpty)) {
       var media = ctr.current.last;
       if (!isLive) media = media.copyWith(start: ctr.state.position);
+      _threadRipperRestarting = true;
       return ctr.open(media, play: true);
     }
     return null;
@@ -1050,6 +1058,10 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
       /// position
       stream.position.listen((Duration position) {
+        _threadRipperTransport?.concurrencyController.buffer(
+          (player.state.buffer - position).inMilliseconds / 1000,
+          player.state.playing && !_threadRipperRestarting,
+        );
         final posInSeconds = position.inSeconds;
 
         if (posInSeconds != this.position.value) {
@@ -1071,6 +1083,14 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         buffered.value = buffer.inSeconds;
       }),
       stream.buffering.listen((bool buffering) {
+        if (buffering &&
+            !isBuffering.value &&
+            !_threadRipperRestarting &&
+            player.state.playing &&
+            player.state.position > Duration.zero) {
+          _threadRipperTransport?.concurrencyController.stall();
+        }
+        if (!buffering) _threadRipperRestarting = false;
         isBuffering.value = buffering;
         if (!playerStatus.isCompleted) {
           _stopWakeLockTimer();
@@ -1183,6 +1203,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
     danmakuController?.clear();
     try {
+      _threadRipperRestarting = true;
       await _videoPlayerController?.seek(position);
     } catch (e) {
       if (kDebugMode) debugPrint('seek failed: $e');

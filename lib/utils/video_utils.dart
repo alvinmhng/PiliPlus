@@ -31,6 +31,10 @@ abstract final class VideoUtils {
       return urls.first;
     }
 
+    final selectedCDNService = isAudio && disableAudioCDN
+        ? CDNService.backupUrl
+        : defaultCDNService;
+
     String? mcdnTf;
     String? mcdnUpgcxcode;
 
@@ -43,11 +47,10 @@ abstract final class VideoUtils {
           // upos-sz-mirrorcoso1.bilivideo.com os=mcdn
           mcdnUpgcxcode = url;
         } else {
-          if (defaultCDNService == CDNService.backupUrl ||
-              (isAudio && disableAudioCDN)) {
+          if (selectedCDNService == CDNService.backupUrl) {
             return url;
           }
-          return uri.replace(host: defaultCDNService.host).toString();
+          return uri.replace(host: selectedCDNService.host).toString();
         }
       }
 
@@ -66,9 +69,15 @@ abstract final class VideoUtils {
       if (url.contains('szbdyd.com')) {
         final uri = Uri.parse(url);
         final hostname =
-            uri.queryParameters['xy_usource'] ?? defaultCDNService.host;
+            uri.queryParameters['xy_usource'] ??
+            selectedCDNService.host ??
+            uri.host;
         return uri
-            .replace(scheme: 'https', host: hostname, port: 443)
+            .replace(
+              scheme: 'https',
+              host: hostname,
+              port: 443,
+            )
             .toString();
       }
 
@@ -86,7 +95,11 @@ abstract final class VideoUtils {
                   queryParameters: {'url': mcdnTf},
                 ).toString()
         : Uri.parse(mcdnUpgcxcode)
-              .replace(host: defaultCDNService.host ?? CDNService.ali.host)
+              .replace(
+                scheme: 'https',
+                host: selectedCDNService.host ?? CDNService.ali.host,
+                port: 443,
+              )
               .toString();
   }
 

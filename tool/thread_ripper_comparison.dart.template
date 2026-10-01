@@ -1,0 +1,160 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:PiliPlus/models/common/video/thread_ripper.dart';
+import 'package:PiliPlus/services/thread_ripper/proxy.dart';
+import 'ours-before/proxy.dart' as old;
+import 'ours-before/models.dart' as old_model;
+import 'lemonteaau/range_proxy.dart' as lemon;
+
+class Fixture {
+  Fixture(this.length);
+  final int length;
+  late final bytes = Uint8List.fromList(
+    List.generate(length, (i) => (i * 37) % 251),
+  );
+  late HttpServer server;
+  int requests = 0;
+  int requestedBytes = 0;
+  final ports = <int>{};
+  Future<void> start() async {
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) => unawaited(serve(request)));
+  }
+  Uri get uri => Uri.parse('http://127.0.0.1:${server.port}/video');
+  Future<void> serve(HttpRequest request) async {
+    try {
+      requests++;
+      ports.add(request.connectionInfo!.remotePort);
+      final range = request.headers.value('range');
+      final match = range == null ? null : RegExp(r'bytes=(\d+)-(\d*)').firstMatch(range);
+      final start = match == null ? 0 : int.parse(match[1]!);
+      final end = match == null || match[2]!.isEmpty
+          ? length - 1 : min(int.parse(match[2]!), length - 1);
+      requestedBytes += end - start + 1;
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      if (range != null) {
+        request.response.statusCode = 206;
+        request.response.headers.set('content-range', 'bytes $start-$end/$length');
+      }
+      request.response
+        ..contentLength = end - start + 1
+        ..headers.set('content-type', 'application/octet-stream');
+      request.response.add(Uint8List.sublistView(bytes, start, end + 1));
+      await request.response.close();
+    } catch (_) {
+      try { await request.response.close(); } catch (_) {}
+    }
+  }
+  Future<void> close() => server.close(force: true);
+}
+
+class Adapter {
+  Adapter(this.url, this.close);
+  final String url;
+  final Future<void> Function() close;
+}
+Future<Adapter> open(String kind, Uri uri) async {
+  if (kind == 'ours-before') {
+    final proxy = old.ThreadRipperProxy(
+      options: old_model.ThreadRipperOptions(enabled: true, concurrency: 8),
+      userAgent: 'Comparison', referer: 'https://www.bilibili.com',
+      clientFactory: HttpClient.new,
+    );
+    await proxy.start();
+    return Adapter(proxy.addVod([uri]), proxy.dispose);
+  }
+  if (kind == 'lemonteaau') {
+    final proxy = lemon.RipperRangeProxy(concurrency: 8, userAgent: 'Comparison');
+    await proxy.start();
+    return Adapter(proxy.registerCandidates([uri]), () async => proxy.close());
+  }
+  final proxy = ThreadRipperProxy(
+    options: ThreadRipperOptions(enabled: true, concurrency: 8),
+    userAgent: 'Comparison', referer: 'https://www.bilibili.com',
+    clientFactory: HttpClient.new,
+  );
+  await proxy.start();
+  return Adapter(proxy.addVod([uri]), proxy.dispose);
+}
+
+Future<Map<String, int>> download(String kind) async {
+  final fixture = Fixture(2 * 1024 * 1024);
+  await fixture.start();
+  final proxy = await open(kind, fixture.uri);
+  final client = HttpClient();
+  try {
+    final watch = Stopwatch()..start();
+    final response = await (await client.getUrl(Uri.parse(proxy.url))).close();
+    int firstMs = 0;
+    final received = BytesBuilder(copy: false);
+    await for (final chunk in response) {
+      if (received.isEmpty) firstMs = watch.elapsedMilliseconds;
+      received.add(chunk);
+    }
+    final totalMs = watch.elapsedMilliseconds;
+    expect(listEquals(received.takeBytes(), fixture.bytes), isTrue);
+    return {
+      'first_body_ms': firstMs,
+      'complete_2MiB_ms': totalMs,
+      'requests': fixture.requests,
+      'connections': fixture.ports.length,
+    };
+  } finally {
+    client.close(force: true);
+    await proxy.close();
+    await fixture.close();
+  }
+}
+
+Future<Map<String, int>> disconnect(String kind) async {
+  final fixture = Fixture(6 * 1024 * 1024);
+  await fixture.start();
+  final proxy = await open(kind, fixture.uri);
+  final uri = Uri.parse(proxy.url);
+  final socket = await Socket.connect(uri.host, uri.port);
+  try {
+    socket.write('GET ${uri.path} HTTP/1.1\r\nHost: ${uri.host}\r\n\r\n');
+    await socket.flush();
+    await socket.first;
+    socket.destroy();
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    final count = fixture.requests;
+    final requested = fixture.requestedBytes;
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    return {
+      'requested_bytes_at_500ms': requested,
+      'requests_at_500ms': count,
+      'additional_requests_next_200ms': fixture.requests - count,
+    };
+  } finally {
+    socket.destroy();
+    await proxy.close();
+    await fixture.close();
+  }
+}
+
+void main() {
+  test('compare pinned proxies under identical local HTTP latency', () async {
+    final results = <String, Object>{};
+    for (final kind in ['ours-before', 'lemonteaau', 'combined']) {
+      final runs = <Map<String, int>>[];
+      for (var i = 0; i < 3; i++) {
+        runs.add(await download(kind));
+      }
+      final median = <String, int>{};
+      for (final key in runs.first.keys) {
+        final values = runs.map((run) => run[key]!).toList()..sort();
+        median[key] = values[1];
+      }
+      results[kind] = {'runs': runs, 'median': median, 'disconnect': await disconnect(kind)};
+    }
+    await File(Platform.environment['RIPPER_BENCHMARK_OUTPUT']!)
+        .writeAsString(const JsonEncoder.withIndent('  ').convert(results));
+    print(jsonEncode(results));
+  }, timeout: const Timeout(Duration(seconds: 30)));
+}

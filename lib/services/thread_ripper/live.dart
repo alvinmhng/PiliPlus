@@ -44,15 +44,19 @@ extension _LiveTransport on ThreadRipperProxy {
 
   Future<void> _serveLive(
     HttpRequest request,
+    _Downstream response,
     _LiveAsset asset,
     _Transfer transfer,
   ) async {
     asset.touchedAt = _clock.elapsedMilliseconds;
-    final response = request.response;
     Uint8List bytes;
     if (asset.playlist) {
       // Playlists are live snapshots: never cache them between player requests.
-      final result = await _liveRace(asset.candidates, maximum: 1024 * 1024);
+      final result = await _liveRace(
+        asset.candidates,
+        maximum: 1024 * 1024,
+        owner: transfer,
+      );
       transfer.check();
       final source = utf8.decode(result.$1);
       if (!source.trimLeft().startsWith('#EXTM3U')) {
@@ -163,6 +167,7 @@ extension _LiveTransport on ThreadRipperProxy {
           session,
           uri,
           candidates,
+          prefetch: true,
         ).then<void>((_) {}, onError: (Object _) {}).whenComplete(() {
           session.prefetchActive--;
           _pumpPrefetch(session);
@@ -174,13 +179,15 @@ extension _LiveTransport on ThreadRipperProxy {
   Future<Uint8List> _liveSegment(
     _LiveSession session,
     Uri uri,
-    List<Uri> candidates,
-  ) {
+    List<Uri> candidates, {
+    bool prefetch = false,
+  }) {
     _pruneLiveCache(session);
     if (session.cache[uri] case final entry?) return entry.bytes;
     final future = _liveRace(
       candidates,
       maximum: 8 * 1024 * 1024,
+      priority: prefetch ? 30 : 120,
     ).then((value) => value.$1);
     final entry = _LiveCacheEntry(future, _clock.elapsedMilliseconds);
     session.cache[uri] = entry;
@@ -230,6 +237,8 @@ extension _LiveTransport on ThreadRipperProxy {
   Future<(Uint8List, Uri)> _liveRace(
     List<Uri> candidates, {
     required int maximum,
+    _Transfer? owner,
+    int priority = 120,
   }) async {
     if (_closed) throw StateError('Transport closed');
     final routes = _ordered(candidates).take(4).toList();
@@ -241,53 +250,67 @@ extension _LiveTransport on ThreadRipperProxy {
     Timer? hedge;
 
     void launch() {
-      if (_closed || winner.isCompleted || next >= routes.length) return;
+      if (_closed ||
+          owner?.cancelled == true ||
+          winner.isCompleted ||
+          next >= routes.length) {
+        return;
+      }
       final uri = routes[next++];
-      final transfer = _newTransfer();
+      final rescue = next > 1;
+      final transfer = _newTransfer(owner);
       transfers.add(transfer);
       pending++;
-      final watch = Stopwatch()..start();
+      int status = 0;
       unawaited(
         _pool
-            .run(transfer, () async {
-              final upstream = await _open(transfer, uri);
-              try {
-                final response = upstream.response;
-                if (response.statusCode != HttpStatus.ok &&
-                    response.statusCode != HttpStatus.partialContent) {
-                  _failure(uri, status: response.statusCode);
-                  throw const HttpException('Live node unavailable');
+            .run(
+              transfer,
+              () async {
+                final upstream = await _open(transfer, uri);
+                try {
+                  final response = upstream.response;
+                  status = response.statusCode;
+                  if (response.statusCode != HttpStatus.ok &&
+                      response.statusCode != HttpStatus.partialContent) {
+                    throw const HttpException('Live node unavailable');
+                  }
+                  final range = MediaContentRange.parse(
+                    response.headers.value(HttpHeaders.contentRangeHeader),
+                  );
+                  if (response.statusCode == HttpStatus.partialContent &&
+                      (range == null ||
+                          range.start != 0 ||
+                          range.end != range.total - 1)) {
+                    throw const FormatException('Incomplete live segment');
+                  }
+                  if (response.contentLength > maximum) {
+                    throw const FormatException('Live response too large');
+                  }
+                  final bytes = await _read(
+                    upstream,
+                    transfer,
+                    maximum,
+                    expected: response.contentLength >= 0
+                        ? response.contentLength
+                        : range?.total,
+                  );
+                  if (bytes.isEmpty) {
+                    throw const FormatException('Empty live segment');
+                  }
+                  _success(
+                    uri,
+                    bytes.length,
+                    upstream.watch.elapsedMilliseconds,
+                  );
+                  return (bytes, uri);
+                } finally {
+                  _release(upstream, transfer);
                 }
-                final range = MediaContentRange.parse(
-                  response.headers.value(HttpHeaders.contentRangeHeader),
-                );
-                if (response.statusCode == HttpStatus.partialContent &&
-                    (range == null ||
-                        range.start != 0 ||
-                        range.end != range.total - 1)) {
-                  throw const FormatException('Incomplete live segment');
-                }
-                if (response.contentLength > maximum) {
-                  throw const FormatException('Live response too large');
-                }
-                final bytes = await _read(
-                  upstream,
-                  transfer,
-                  maximum,
-                  expected: response.contentLength >= 0
-                      ? response.contentLength
-                      : range?.total,
-                );
-                if (bytes.isEmpty) {
-                  throw const FormatException('Empty live segment');
-                }
-                _success(uri, bytes.length, watch.elapsedMilliseconds);
-                return (bytes, uri);
-              } finally {
-                upstream.request.abort();
-                transfer.requests.remove(upstream.request);
-              }
-            })
+              },
+              priority: priority,
+              rescue: rescue || priority >= 120,
+            )
             .then<void>(
               (value) {
                 pending--;
@@ -295,13 +318,13 @@ extension _LiveTransport on ThreadRipperProxy {
               },
               onError: (Object error) {
                 pending--;
-                if (winner.isCompleted) return;
+                if (winner.isCompleted || owner?.cancelled == true) return;
                 if (_closed) {
                   winner.completeError(StateError('Transport closed'));
                   return;
                 }
                 _retries++;
-                _failure(uri);
+                _failure(uri, status: status);
                 launch();
                 if (pending == 0 && next >= routes.length) {
                   winner.completeError(error);
@@ -315,7 +338,9 @@ extension _LiveTransport on ThreadRipperProxy {
     launch();
     hedge = Timer(const Duration(milliseconds: 400), launch);
     try {
-      return await winner.future;
+      final result = await (owner?.race(winner.future) ?? winner.future);
+      _delivered(result.$1.length);
+      return result;
     } finally {
       hedge.cancel();
       for (final transfer in transfers) {

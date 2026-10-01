@@ -1,0 +1,122 @@
+{
+  "date": "2026-10-01",
+  "baseline_commit": "5e4971a3676493f1e222f8015db76c8747178e96",
+  "reference_commit": "014cdd38318a41c78aa61254d6adab96d831fcd4",
+  "configuration": {
+    "connection_limit": 8,
+    "http_response_delay_ms": 80,
+    "download_fixture_bytes": 2097152,
+    "download_repetitions": 3,
+    "disconnect_fixture_bytes": 6291456,
+    "disconnect_observation_ms": 500,
+    "transport": "local HTTP, no bandwidth cap, one media track"
+  },
+  "combined_source_sha256": {
+    "lib/models/common/video/thread_ripper.dart": "d9da4570edebd7b973a96132eac8c7a4fed99509095da679b37b72f900de4cdb",
+    "lib/services/thread_ripper/auto_concurrency.dart": "16566572d020eb2d7cb18644f60155a125e5fcf3624ef80f73c873391fa987da",
+    "lib/services/thread_ripper/live.dart": "0583e11b9479959878d00d583f9a266d614e61250aa611df6f3f2560944ea18d",
+    "lib/services/thread_ripper/proxy.dart": "131203e039f1e9970f6d19548cdf9b504fcc83c5d1fe069a09be36a66b61db8f",
+    "lib/services/thread_ripper/routes.dart": "5bcb8a9d42661dd78845a7adeaef0543a13bd4a3733afcfde0d640d24f482cdd"
+  },
+  "results": {
+    "ours-before": {
+      "runs": [
+        {
+          "first_body_ms": 262,
+          "complete_2MiB_ms": 375,
+          "requests": 10,
+          "connections": 10
+        },
+        {
+          "first_body_ms": 212,
+          "complete_2MiB_ms": 322,
+          "requests": 10,
+          "connections": 10
+        },
+        {
+          "first_body_ms": 207,
+          "complete_2MiB_ms": 310,
+          "requests": 10,
+          "connections": 10
+        }
+      ],
+      "median": {
+        "first_body_ms": 212,
+        "complete_2MiB_ms": 322,
+        "requests": 10,
+        "connections": 10
+      },
+      "disconnect": {
+        "requested_bytes_at_500ms": 6291457,
+        "requests_at_500ms": 26,
+        "additional_requests_next_200ms": 0
+      }
+    },
+    "lemonteaau": {
+      "runs": [
+        {
+          "first_body_ms": 141,
+          "complete_2MiB_ms": 244,
+          "requests": 7,
+          "connections": 6
+        },
+        {
+          "first_body_ms": 127,
+          "complete_2MiB_ms": 229,
+          "requests": 7,
+          "connections": 6
+        },
+        {
+          "first_body_ms": 126,
+          "complete_2MiB_ms": 220,
+          "requests": 7,
+          "connections": 6
+        }
+      ],
+      "median": {
+        "first_body_ms": 127,
+        "complete_2MiB_ms": 229,
+        "requests": 7,
+        "connections": 6
+      },
+      "disconnect": {
+        "requested_bytes_at_500ms": 2097154,
+        "requests_at_500ms": 7,
+        "additional_requests_next_200ms": 0
+      }
+    },
+    "combined": {
+      "runs": [
+        {
+          "first_body_ms": 130,
+          "complete_2MiB_ms": 231,
+          "requests": 7,
+          "connections": 6
+        },
+        {
+          "first_body_ms": 125,
+          "complete_2MiB_ms": 224,
+          "requests": 7,
+          "connections": 6
+        },
+        {
+          "first_body_ms": 121,
+          "complete_2MiB_ms": 220,
+          "requests": 7,
+          "connections": 6
+        }
+      ],
+      "median": {
+        "first_body_ms": 125,
+        "complete_2MiB_ms": 224,
+        "requests": 7,
+        "connections": 6
+      },
+      "disconnect": {
+        "requested_bytes_at_500ms": 1813166,
+        "requests_at_500ms": 6,
+        "additional_requests_next_200ms": 0
+      }
+    }
+  }
+}
