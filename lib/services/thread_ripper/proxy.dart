@@ -91,8 +91,9 @@ class ThreadRipperProxy {
   int _retries = 0;
   int _fallbacks = 0;
   int _sequence = 0;
-  int _rotation = 0;
   String _lastHost = '';
+  String? _livePreferredAuthority;
+  int _livePreferredAt = 0;
   String _status = '等待播放';
   late final String _token = List.generate(
     24,
@@ -353,6 +354,7 @@ class ThreadRipperProxy {
     int maximum, {
     int? expected,
     _Receiving? receiving,
+    void Function(List<int>)? onChunk,
   }) async {
     final bytes = BytesBuilder(copy: false);
     final remaining = attemptTimeout - upstream.watch.elapsed;
@@ -368,6 +370,7 @@ class ThreadRipperProxy {
           }
           bytes.add(chunk);
           receiving?.chunks.add(chunk);
+          onChunk?.call(chunk);
           if (_ownsTuner) _concurrency.activity();
         }
       }());
@@ -387,33 +390,58 @@ class ThreadRipperProxy {
     if (candidates.isEmpty) return const [];
     final now = _clock.elapsedMilliseconds;
     final available = candidates
-        .where((uri) => (_health[uri.toString()]?.blockedUntil ?? 0) <= now)
+        .where(
+          (uri) =>
+              (_health[uri.toString()]?.blockedUntil ?? 0) <= now &&
+              (_health['live:${uri.authority}']?.blockedUntil ?? 0) <= now,
+        )
         .toList();
     final pool = available.isEmpty ? candidates.toList() : available;
-    final offset = _rotation++ % pool.length;
-    final rotated = [...pool.skip(offset), ...pool.take(offset)];
-    final positions = {for (var i = 0; i < rotated.length; i++) rotated[i]: i};
+    final positions = {for (var i = 0; i < pool.length; i++) pool[i]: i};
     double speed(Uri uri) {
-      final h = _health['${uri.authority}${uri.path}'];
+      final h = _health['live:${uri.authority}'];
       return h != null && now - h.measuredAt < 90000 ? h.speed : 0;
     }
 
-    rotated.sort((a, b) {
+    pool.sort((a, b) {
+      bool preferred(Uri uri) =>
+          uri.authority == _livePreferredAuthority &&
+          now - _livePreferredAt < 90000;
+      final byPreferred = (preferred(b) ? 1 : 0) - (preferred(a) ? 1 : 0);
+      if (byPreferred != 0) return byPreferred;
       final bySpeed = speed(b).compareTo(speed(a));
-      return bySpeed != 0 ? bySpeed : positions[a]!.compareTo(positions[b]!);
+      if (bySpeed != 0) return bySpeed;
+      bool proven(Uri uri) {
+        final h = _health['live:${uri.authority}'];
+        return h != null && h.succeeded && now - h.touchedAt < 90000;
+      }
+
+      final bySuccess = (proven(b) ? 1 : 0) - (proven(a) ? 1 : 0);
+      return bySuccess != 0
+          ? bySuccess
+          : positions[a]!.compareTo(positions[b]!);
     });
-    return rotated;
+    return pool;
   }
 
-  void _success(Uri uri, int bytes, int elapsed) {
+  void _success(Uri uri, int bytes, int elapsed, {bool liveMedia = false}) {
     _lastHost = uri.host;
     _health[uri.toString()] = _RouteHealth()
       ..touchedAt = _clock.elapsedMilliseconds;
+    final health =
+        _health.putIfAbsent(
+            'live:${uri.authority}',
+            _RouteHealth.new,
+          )
+          ..succeeded = true
+          ..failures = 0
+          ..blockedUntil = 0
+          ..touchedAt = _clock.elapsedMilliseconds;
+    if (liveMedia) {
+      _livePreferredAuthority = uri.authority;
+      _livePreferredAt = _clock.elapsedMilliseconds;
+    }
     if (bytes >= 48 * 1024 && elapsed > 0) {
-      final health = _health.putIfAbsent(
-        '${uri.authority}${uri.path}',
-        _RouteHealth.new,
-      );
       final speed = bytes * 1000 / elapsed;
       health.speed = health.speed == 0
           ? speed
@@ -430,6 +458,20 @@ class ThreadRipperProxy {
     health.blockedUntil =
         _clock.elapsedMilliseconds +
         math.min(30000, 1500 * (1 << math.min(health.failures, 4)));
+    // A stale fast measurement must not send each new segment back to a node
+    // that is offline or overloaded. Signature failures remain URL-specific.
+    if (status == 0 || status == 412 || status == 429 || (status ?? 0) >= 500) {
+      final node = _health.putIfAbsent(
+        'live:${uri.authority}',
+        _RouteHealth.new,
+      );
+      node.failures++;
+      node
+        ..touchedAt = _clock.elapsedMilliseconds
+        ..blockedUntil =
+            _clock.elapsedMilliseconds +
+            math.min(15000, 1000 * (1 << math.min(node.failures, 4)));
+    }
     if (_ownsTuner && (status == 429 || status == 412)) {
       _concurrency.pushback();
     }
@@ -1066,6 +1108,7 @@ class _MediaInfo {
 }
 
 class _RouteHealth {
+  bool succeeded = false;
   int failures = 0;
   int blockedUntil = 0;
   int measuredAt = 0;
@@ -1145,8 +1188,8 @@ class _Transfer {
 class _Waiter {
   _Waiter(this.transfer, this.priority, this.rescue, this.sequence);
   final _Transfer transfer;
-  final int priority;
-  final bool rescue;
+  int priority;
+  bool rescue;
   final int sequence;
   final ready = Completer<void>();
   bool granted = false;
@@ -1180,10 +1223,21 @@ class _TransferPool {
       _waiting.remove(waiter);
       if (waiter.granted) {
         active--;
-        if (!rescue) _normalActive--;
+        if (!waiter.rescue) _normalActive--;
       }
       pump();
     }
+  }
+
+  void promote(_Transfer transfer, {required int priority}) {
+    for (final waiter in _waiting) {
+      if (identical(waiter.transfer, transfer)) {
+        waiter
+          ..priority = math.max(waiter.priority, priority)
+          ..rescue = true;
+      }
+    }
+    pump();
   }
 
   void pump() {

@@ -124,6 +124,12 @@ abstract final class ThreadRipperCdn {
     final custom =
         options.mode == ThreadRipperCdnMode.custom &&
         options.customHosts.isNotEmpty;
+    if (live && !custom) {
+      // Live APIs provide complete routes with node-specific paths/signatures.
+      // Generic host substitution can turn all early startup candidates into
+      // unavailable routes, while discarding each backup node's signed query.
+      return originals;
+    }
     final hosts = custom
         ? options.customHosts
         : live
