@@ -11,7 +11,6 @@ This is a fork of [bggRGjQaUbCoE/PiliPlus](https://github.com/bggRGjQaUbCoE/Pili
 - Combines metadata and the initial media block to reduce startup buffering, reuses connections, and refills downloads continuously. Slow startup nodes get a backup after 120 ms.
 - Uses weighted CDN selection, resumable ranges, and buffer-aware automatic concurrency while retaining original-route recovery.
 - Adds separately enabled experimental HLS live acceleration, segment prefetching, and throughput, concurrency, retry, and fallback statistics.
-- Uses a persistent Android signing key for this fork. In-app update checks and downloads point to this repository.
 
 Acceleration is off by default. Open **Settings → Audio/Video settings → 线程撕裂者 · 多线程加速**, or use the video settings panel or live player menu. Saving settings in the player preserves the playback position and paused state.
 
