@@ -69,7 +69,8 @@ class ThreadRipperProxy {
   final Duration firstByteTimeout;
   final Duration stallTimeout;
   final Duration attemptTimeout;
-  final stats = ValueNotifier(const ThreadRipperStats());
+  late final _stats = _ObservedStats(_snapshot, _statsObserversChanged);
+  ValueListenable<ThreadRipperStats> get stats => _stats;
   final _assets = <String, _Asset>{};
   final _transfers = <_Transfer>{};
   final _health = <String, _RouteHealth>{};
@@ -88,6 +89,8 @@ class ThreadRipperProxy {
   int _bytes = 0;
   int _sampleBytes = 0;
   int _sampleAt = 0;
+  int _sampleSpeed = 0;
+  int _housekeepingAt = 0;
   int _retries = 0;
   int _fallbacks = 0;
   int _sequence = 0;
@@ -112,15 +115,12 @@ class ThreadRipperProxy {
     _concurrency.newSession();
     _concurrency.onChanged = _tunerListener;
     server.listen((request) => unawaited(_serve(request)));
-    _sampleAt = _clock.elapsedMilliseconds;
-    _statsTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      _publish();
-      _pruneLiveAssets();
-    });
+    _statsObserversChanged();
   }
 
   String _register(_Asset asset, String extension) {
     if (_closed || _server == null) throw StateError('Transport unavailable');
+    _pruneExpired();
     final key = '/$_token/${_sequence++}$extension';
     _assets[key] = asset;
     return 'http://127.0.0.1:${_server!.port}$key';
@@ -388,6 +388,7 @@ class ThreadRipperProxy {
   // with weighted assignments, signature-aware failures, and expiring samples.
   List<Uri> _ordered(List<Uri> candidates) {
     if (candidates.isEmpty) return const [];
+    _pruneExpired();
     final now = _clock.elapsedMilliseconds;
     final available = candidates
         .where(
@@ -1041,23 +1042,46 @@ class ThreadRipperProxy {
     }
   }
 
-  void _publish() {
-    if (_closed) return;
+  // Expiry runs with transport activity instead of waking an idle/paused player.
+  // Registration and live routing bound retained assets and health samples even
+  // when nobody has the statistics panel open.
+  void _pruneExpired() {
     final now = _clock.elapsedMilliseconds;
+    if (now - _housekeepingAt < 1000) return;
+    _housekeepingAt = now;
     _health.removeWhere((_, health) => now - health.touchedAt > 120000);
-    final elapsed = math.max(1, now - _sampleAt);
-    stats.value = ThreadRipperStats(
+    _pruneLiveAssets();
+  }
+
+  void _statsObserversChanged() {
+    _statsTimer?.cancel();
+    _statsTimer = null;
+    _sampleSpeed = 0;
+    if (_closed || _server == null || !_stats.observed) return;
+    _sampleBytes = _bytes;
+    _sampleAt = _clock.elapsedMilliseconds;
+    _statsTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      final now = _clock.elapsedMilliseconds;
+      final elapsed = math.max(1, now - _sampleAt);
+      _sampleSpeed = (_bytes - _sampleBytes) * 1000 ~/ elapsed;
+      _sampleBytes = _bytes;
+      _sampleAt = now;
+      _stats.publish();
+    });
+  }
+
+  ThreadRipperStats _snapshot() {
+    final now = _clock.elapsedMilliseconds;
+    return ThreadRipperStats(
       activeThreads: _pool.active,
       threadLimit: _limit,
-      bytesPerSecond: (_bytes - _sampleBytes) * 1000 ~/ elapsed,
+      bytesPerSecond: now - _sampleAt <= 1000 ? _sampleSpeed : 0,
       downloadedBytes: _bytes,
       retries: _retries,
       fallbacks: _fallbacks,
       lastHost: _lastHost,
       status: _status,
     );
-    _sampleBytes = _bytes;
-    _sampleAt = now;
   }
 
   Future<void> dispose() async {
@@ -1079,7 +1103,41 @@ class ThreadRipperProxy {
     _assets.clear();
     _health.clear();
     await server?.close(force: true);
-    stats.dispose();
+    _stats.dispose();
+  }
+}
+
+/// Counters are fresh on read; periodic speed updates exist only while observed.
+class _ObservedStats extends ChangeNotifier
+    implements ValueListenable<ThreadRipperStats> {
+  _ObservedStats(this._snapshot, this._observersChanged);
+
+  final ThreadRipperStats Function() _snapshot;
+  final VoidCallback _observersChanged;
+
+  bool get observed => hasListeners;
+  void publish() {
+    notifyListeners();
+    // ChangeNotifier settles reentrant removals after dispatch. A final
+    // observer can close the panel from its callback, so reconcile afterward.
+    if (!hasListeners) _observersChanged();
+  }
+
+  @override
+  ThreadRipperStats get value => _snapshot();
+
+  @override
+  void addListener(VoidCallback listener) {
+    final observed = hasListeners;
+    super.addListener(listener);
+    if (!observed) _observersChanged();
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    final observed = hasListeners;
+    super.removeListener(listener);
+    if (observed && !hasListeners) _observersChanged();
   }
 }
 

@@ -1,3 +1,4 @@
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/common/widgets/loading_widget/loading_widget.dart';
 import 'package:PiliPlus/models/common/member/contribute_type.dart';
 import 'package:PiliPlus/models_new/space/space/tab2.dart';
@@ -86,7 +87,10 @@ class _MemberContributeState extends State<MemberContribute>
                 child: TabBarView(
                   physics: const NeverScrollableScrollPhysics(),
                   controller: _controller.tabController,
-                  children: _controller.items!.map(_getPageFromType).toList(),
+                  children: activeTabChildren(
+                    _controller.items!.map(_getPageFromType).toList(),
+                    controller: _controller.tabController,
+                  ),
                 ),
               ),
             ],

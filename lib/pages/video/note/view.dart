@@ -171,7 +171,10 @@ class _NoteListPageState extends State<NoteListPage>
     switch (loadingState) {
       case Loading():
         return const SliverPrototypeExtentList(
-          prototypeItem: VideoReplySkeleton(),
+          prototypeItem: TickerMode(
+            enabled: false,
+            child: VideoReplySkeleton(),
+          ),
           delegate: SliverSingleChildDelegate(
             count: 8,
             child: VideoReplySkeleton(),

@@ -29,6 +29,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
+import 'package:PiliPlus/plugin/pl_player/utils/playback_energy.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/thread_ripper/proxy.dart';
 import 'package:PiliPlus/utils/accounts.dart';
@@ -77,6 +78,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   ThreadRipperProxy? get threadRipperTransport => _threadRipperTransport;
   int _transportGeneration = 0;
   Timer? _transportRecoveryTimer;
+  final _backgroundVideoTrack = BackgroundVideoTrack();
+  bool _backgrounded = false;
+  bool _manualPipPending = false;
 
   static PlPlayerController? _instance;
 
@@ -292,6 +296,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   void enterPip({bool autoEnter = false}) {
     if (videoPlayerController case NativePlayer(:final state)) {
+      if (!autoEnter) _manualPipPending = true;
       PageUtils.enterPip(
         autoEnter: autoEnter,
         width: state.width == 0 ? width : state.width,
@@ -313,7 +318,42 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   late RuleFilter filters = Pref.danmakuFilterRule;
   // 关联弹幕控制器
   DanmakuController<DanmakuExtra>? danmakuController;
-  bool showDanmaku = true;
+  bool _showDanmaku = true;
+  bool get showDanmaku => _showDanmaku;
+  set showDanmaku(bool value) {
+    if (_showDanmaku == value) return;
+    _showDanmaku = value;
+    _notifyDanmakuState();
+  }
+
+  final _danmakuStateListeners = <VoidCallback>{};
+  final _danmakuStateSubscriptions = <StreamSubscription>[];
+
+  void addDanmakuStateListener(VoidCallback listener) =>
+      _danmakuStateListeners.add(listener);
+  void removeDanmakuStateListener(VoidCallback listener) =>
+      _danmakuStateListeners.remove(listener);
+  void _notifyDanmakuState() {
+    for (final listener in _danmakuStateListeners.toList()) {
+      listener();
+    }
+  }
+
+  bool shouldRenderDanmaku({
+    bool? enabled,
+    bool inPip = false,
+    bool requirePlaying = true,
+  }) => canRenderDanmaku(
+    enabled: enabled ?? enableShowDanmakuAdaptive.value,
+    opacity: danmakuOpacity.value,
+    visible: visible,
+    showDanmaku: showDanmaku,
+    playing: playerStatus.isPlaying,
+    audioOnly: onlyPlayAudio.value,
+    // Normal visible playback needs no native PiP query on each position event.
+    inPip: inPip || ((!visible || !showDanmaku) && isPipMode),
+    requirePlaying: requirePlaying,
+  );
   Set<int> dmState = <int>{};
   late final mergeDanmaku = Pref.mergeDanmaku;
   late final String midHash = getCrc32(
@@ -488,7 +528,76 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   Box video = GStorage.video;
 
-  bool visible = true;
+  bool _visible = true;
+  bool get visible => _visible;
+  set visible(bool value) {
+    if (_visible == value) return;
+    _visible = value;
+    _notifyDanmakuState();
+  }
+
+  bool get _suspendBackgroundVideo => canSuspendBackgroundVideo(
+    mobile: PlatformUtils.isMobile,
+    backgrounded: _backgrounded,
+    backgroundPlay: continuePlayInBackground.value,
+    inPip: isPipMode,
+    android: Platform.isAndroid,
+    autoPip: autoPiP,
+    manualPipPending: _manualPipPending,
+  );
+
+  void updatePlaybackLifecycle(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _backgrounded = false;
+      _manualPipPending = false;
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _backgrounded = true;
+    }
+    _applyBackgroundVideoTrack();
+  }
+
+  void _applyBackgroundVideoTrack() {
+    final player = _videoPlayerController;
+    if (player == null || _playerCount == 0) return;
+    _backgroundVideoTrack.update(
+      generation: _transportGeneration,
+      suspended: _suspendBackgroundVideo && _hasSelectedAudio(player),
+      audioOnly: onlyPlayAudio.value,
+      read: () => player.getProperty('vid'),
+      write: (track) => player.setProperty('file-local-options/vid', track),
+    );
+  }
+
+  bool _hasSelectedAudio(Player player) => hasSelectedPlaybackAudio(
+    track: player.getProperty('aid'),
+    sampleRate: player.state.audioParams.sampleRate,
+  );
+
+  Future<void> _reloadPlaybackMedia(
+    Player player,
+    Media media, {
+    required bool play,
+  }) async {
+    final generation = _transportGeneration;
+    final selection = videoTrackForReload(
+      current: player.getProperty('vid'),
+      restoration: _backgroundVideoTrack.restoration,
+      backgrounded: _suspendBackgroundVideo && _hasSelectedAudio(player),
+      audioOnly: onlyPlayAudio.value,
+    );
+    // A background load carries vid=no in Media.extras. Copy and replace that
+    // temporary option when reopening rather than retaining it after resume.
+    final options = {...?media.extras, 'vid': selection.track};
+    await player.open(media.copyWith(extras: options), play: play);
+    if (generation != _transportGeneration || _playerCount == 0) return;
+    _backgroundVideoTrack.sourceReady(
+      generation,
+      openedSuspended: selection.suspended,
+      suspendedTrack: selection.restore,
+    );
+    _applyBackgroundVideoTrack();
+  }
 
   DeviceOrientation? _orientation;
   late final checkIsAutoRotate = Platform.isAndroid && mode != .gravity;
@@ -543,6 +652,15 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   // 添加一个私有构造函数
   PlPlayerController._() {
+    _danmakuStateSubscriptions.addAll([
+      enableShowDanmaku.listen((_) => _notifyDanmakuState()),
+      enableShowLiveDanmaku.listen((_) => _notifyDanmakuState()),
+      danmakuOpacity.listen((_) => _notifyDanmakuState()),
+      onlyPlayAudio.listen((_) {
+        _notifyDanmakuState();
+        _applyBackgroundVideoTrack();
+      }),
+    ]);
     if (PlatformUtils.isMobile) {
       _orientationListener = NativeDeviceOrientationPlatform.instance
           .onOrientationChanged(
@@ -778,6 +896,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     Volume? volume,
   ) async {
     final generation = ++_transportGeneration;
+    _backgroundVideoTrack.reset();
     _transportRecoveryTimer?.cancel();
     _transportRecoveryTimer = null;
     isBuffering.value = false;
@@ -847,14 +966,13 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
                   );
                   _threadRipperRestarting = true;
                   unawaited(
-                    player
-                        .open(
-                          media,
-                          play: resumePlaying,
-                        )
-                        .catchError((Object _) {
-                          SmartDialog.showToast('播放路线重载失败，请刷新视频');
-                        }),
+                    _reloadPlaybackMedia(
+                      player,
+                      media,
+                      play: resumePlaying,
+                    ).catchError((Object _) {
+                      SmartDialog.showToast('播放路线重载失败，请刷新视频');
+                    }),
                   );
                 }
               },
@@ -928,6 +1046,13 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         return;
       }
       _threadRipperTransport = transport;
+      _backgroundVideoTrack.sourceReady(
+        generation,
+        // Discover the selected audio first: deselecting the only video track
+        // of a silent file makes mpv finish playback instead of saving energy.
+        openedSuspended: false,
+      );
+      _applyBackgroundVideoTrack();
     } catch (_) {
       await transport?.dispose();
       if (generation == _transportGeneration &&
@@ -948,7 +1073,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       var media = ctr.current.last;
       if (!isLive) media = media.copyWith(start: ctr.state.position);
       _threadRipperRestarting = true;
-      return ctr.open(media, play: true);
+      return _reloadPlaybackMedia(ctr, media, play: true);
     }
     return null;
   }
@@ -975,19 +1100,14 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   final Set<ValueChanged<Duration>> _positionListeners = {};
   final Set<ValueChanged<PlayerStatus>> _statusListeners = {};
 
-  Timer? _wakeLockTimer;
+  late final _wakeLockRelease = PlaybackWakeLockRelease(_stopWakeLock);
 
   void _startWakeLockTimer() {
-    _wakeLockTimer?.cancel();
-    _wakeLockTimer = Timer(
-      const Duration(milliseconds: 500),
-      _stopWakeLock,
-    );
+    _wakeLockRelease.schedule();
   }
 
   void _stopWakeLockTimer() {
-    _wakeLockTimer?.cancel();
-    _wakeLockTimer = null;
+    _wakeLockRelease.cancel();
   }
 
   void _stopWakeLock() {
@@ -1079,6 +1199,8 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         }
       }),
       stream.duration.listen(updateDuration),
+      stream.tracks.listen((_) => _applyBackgroundVideoTrack()),
+      stream.audioParams.listen((_) => _applyBackgroundVideoTrack()),
       stream.buffer.listen((Duration buffer) {
         buffered.value = buffer.inSeconds;
       }),
@@ -1093,7 +1215,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         if (!buffering) _threadRipperRestarting = false;
         isBuffering.value = buffering;
         if (!playerStatus.isCompleted) {
-          _stopWakeLockTimer();
+          _wakeLockRelease.buffering(playing: playerStatus.isPlaying);
           _updatePlaybackState();
         }
       }),
@@ -1732,6 +1854,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     _removeListeners();
     _positionListeners.clear();
     _statusListeners.clear();
+    for (final subscription in _danmakuStateSubscriptions) {
+      subscription.cancel();
+    }
+    _danmakuStateSubscriptions.clear();
+    _danmakuStateListeners.clear();
+    _backgroundVideoTrack.reset();
     _stopWakeLockTimer();
     WakelockPlus.disable();
     if (kDebugMode) {

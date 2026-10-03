@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/custom_icon.dart';
 import 'package:PiliPlus/common/widgets/flutter/dyn_tab_bar.dart';
@@ -367,23 +368,26 @@ class _DynamicDetailPageState
       physics: const NeverScrollableScrollPhysics(),
       horizontalDragGestureRecognizer:
           CustomHorizontalDragGestureRecognizer.new,
-      children: DynType.values
-          .map(
-            (e) => switch (e) {
-              .repost => DynRepostPage(
-                isPortrait: isPortrait,
-                id: controller.dynItem.idStr,
-                controller: _repostController,
-              ),
-              .reply => reply,
-              .like => DynLikePage(
-                isPortrait: isPortrait,
-                id: controller.dynItem.idStr,
-                controller: _likeController,
-              ),
-            },
-          )
-          .toList(),
+      children: activeTabChildren(
+        DynType.values
+            .map(
+              (e) => switch (e) {
+                .repost => DynRepostPage(
+                  isPortrait: isPortrait,
+                  id: controller.dynItem.idStr,
+                  controller: _repostController,
+                ),
+                .reply => reply,
+                .like => DynLikePage(
+                  isPortrait: isPortrait,
+                  id: controller.dynItem.idStr,
+                  controller: _likeController,
+                ),
+              },
+            )
+            .toList(),
+        controller: tabController,
+      ),
     );
     if (isPortrait) {
       return Stack(

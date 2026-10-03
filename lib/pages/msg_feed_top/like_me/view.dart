@@ -76,7 +76,10 @@ class _LikeMePageState extends State<LikeMePage> {
     switch (loadingState) {
       case Loading():
         return const SliverPrototypeExtentList(
-          prototypeItem: MsgFeedTopSkeleton(),
+          prototypeItem: TickerMode(
+            enabled: false,
+            child: MsgFeedTopSkeleton(),
+          ),
           delegate: SliverSingleChildDelegate(
             count: 12,
             child: MsgFeedTopSkeleton(),

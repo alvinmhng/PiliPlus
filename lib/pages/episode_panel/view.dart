@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/common/assets.dart';
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/badge.dart';
@@ -239,13 +240,16 @@ class _EpisodePanelState extends State<EpisodePanel>
         controller: _tabController,
         physics: tabBarScrollPhysics,
         horizontalDragGestureRecognizer: horizontalDragGestureRecognizer,
-        children: List.generate(
-          widget.list.length,
-          (index) => _buildBody(
-            theme,
-            index,
-            widget.list[index].episodes,
+        children: activeTabChildren(
+          List.generate(
+            widget.list.length,
+            (index) => _buildBody(
+              theme,
+              index,
+              widget.list[index].episodes,
+            ),
           ),
+          controller: _tabController,
         ),
       );
     }

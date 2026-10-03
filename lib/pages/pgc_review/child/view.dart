@@ -93,7 +93,10 @@ class _PgcReviewChildPageState extends State<PgcReviewChildPage>
     switch (loadingState) {
       case Loading():
         return const SliverPrototypeExtentList(
-          prototypeItem: VideoReplySkeleton(),
+          prototypeItem: TickerMode(
+            enabled: false,
+            child: VideoReplySkeleton(),
+          ),
           delegate: SliverSingleChildDelegate(
             count: 8,
             child: VideoReplySkeleton(),

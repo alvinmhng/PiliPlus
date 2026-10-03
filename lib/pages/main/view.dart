@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/common/assets.dart';
 import 'package:PiliPlus/common/constants.dart';
 import 'package:PiliPlus/common/style.dart';
@@ -480,13 +481,19 @@ class _MainAppState extends PopScopeState<MainApp>
         controller: _mainController.controller,
         physics: const NeverScrollableScrollPhysics(),
         scrollDirection: _mainController.useBottomNav ? .horizontal : .vertical,
-        children: _mainController.navigationBars.map((i) => i.page).toList(),
+        children: activeTabChildren(
+          _mainController.navigationBars.map((i) => i.page).toList(),
+          controller: _mainController.controller,
+        ),
       );
     } else {
       child = PageView(
         controller: _mainController.controller,
         physics: const NeverScrollableScrollPhysics(),
-        children: _mainController.navigationBars.map((i) => i.page).toList(),
+        children: activePageChildren(
+          _mainController.navigationBars.map((i) => i.page).toList(),
+          controller: _mainController.controller,
+        ),
       );
     }
 

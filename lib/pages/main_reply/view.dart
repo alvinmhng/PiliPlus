@@ -114,7 +114,10 @@ class _MainReplyPageState extends State<MainReplyPage>
   ) {
     return switch (loadingState) {
       Loading() => const SliverPrototypeExtentList(
-        prototypeItem: VideoReplySkeleton(),
+        prototypeItem: TickerMode(
+          enabled: false,
+          child: VideoReplySkeleton(),
+        ),
         delegate: SliverSingleChildDelegate(
           count: 10,
           child: VideoReplySkeleton(),

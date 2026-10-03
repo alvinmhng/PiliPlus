@@ -65,7 +65,10 @@ class _SysMsgPageState extends State<SysMsgPage> {
           top: false,
           bottom: false,
           sliver: SliverPrototypeExtentList(
-            prototypeItem: MsgFeedSysMsgSkeleton(),
+            prototypeItem: TickerMode(
+              enabled: false,
+              child: MsgFeedSysMsgSkeleton(),
+            ),
             delegate: SliverSingleChildDelegate(
               count: 12,
               child: MsgFeedSysMsgSkeleton(),

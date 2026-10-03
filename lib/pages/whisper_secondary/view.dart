@@ -93,7 +93,10 @@ class _WhisperSecPageState extends State<WhisperSecPage> {
     switch (loadingState) {
       case Loading():
         return const SliverPrototypeExtentList(
-          prototypeItem: WhisperItemSkeleton(),
+          prototypeItem: TickerMode(
+            enabled: false,
+            child: WhisperItemSkeleton(),
+          ),
           delegate: SliverSingleChildDelegate(
             count: 12,
             child: WhisperItemSkeleton(),

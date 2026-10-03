@@ -1,3 +1,4 @@
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/common/widgets/keep_alive_wrapper.dart';
 import 'package:PiliPlus/common/widgets/scroll_physics.dart'
     show tabBarScrollPhysics;
@@ -98,13 +99,16 @@ class _IntroDetailState extends State<PgcIntroPanel>
       controller: _tabController,
       physics: tabBarScrollPhysics,
       horizontalDragGestureRecognizer: horizontalDragGestureRecognizer,
-      children: [
-        KeepAliveWrapper(child: _buildInfo(theme)),
-        PgcReviewPage(
-          name: widget.item.title!,
-          mediaId: widget.item.mediaId,
-        ),
-      ],
+      children: activeTabChildren(
+        [
+          KeepAliveWrapper(child: _buildInfo(theme)),
+          PgcReviewPage(
+            name: widget.item.title!,
+            mediaId: widget.item.mediaId,
+          ),
+        ],
+        controller: _tabController,
+      ),
     );
   }
 

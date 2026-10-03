@@ -140,7 +140,10 @@ mixin CommonDynPageMixin<T extends StatefulWidget>
     switch (loadingState) {
       case Loading():
         return const SliverPrototypeExtentList(
-          prototypeItem: VideoReplySkeleton(),
+          prototypeItem: TickerMode(
+            enabled: false,
+            child: VideoReplySkeleton(),
+          ),
           delegate: SliverSingleChildDelegate(
             count: 12,
             child: VideoReplySkeleton(),

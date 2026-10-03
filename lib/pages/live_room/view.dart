@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:PiliPlus/common/assets.dart';
 import 'package:PiliPlus/common/style.dart';
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/common/widgets/button/icon_button.dart';
 import 'package:PiliPlus/common/widgets/custom_icon.dart';
 import 'package:PiliPlus/common/widgets/extra_hittest_stack.dart';
@@ -33,6 +34,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/danmaku_options.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
 import 'package:PiliPlus/plugin/pl_player/view/view.dart';
+import 'package:PiliPlus/plugin/pl_player/widgets/energy_aware_danmaku.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
@@ -50,7 +52,7 @@ import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:PiliPlus/utils/theme_utils.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:cached_network_image_ce/cached_network_image.dart';
-import 'package:canvas_danmaku/danmaku_screen.dart';
+import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
@@ -117,6 +119,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
   @override
   Future<void> didPopNext() async {
     addObserverMobile(this);
+    _liveRoomController.setUiVisibility(routeVisible: true);
     if (!plPlayerController.isLive) {
       plPlayerController.isLive = true;
       _liveRoomController.isLoaded.refresh();
@@ -147,6 +150,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
   @override
   void didPushNext() {
     removeObserverMobile(this);
+    _liveRoomController.setUiVisibility(routeVisible: false);
     plPlayerController.removeStatusLister(playerListener);
     _liveRoomController
       ..danmakuController?.clear()
@@ -173,6 +177,9 @@ class _LiveRoomPageState extends State<LiveRoomPage>
   @override
   void dispose() {
     removeObserverMobile(this);
+    _liveRoomController
+      ..setUiVisibility(routeVisible: false)
+      ..closeLiveMsg();
     videoPlayerServiceHandler?.onVideoDetailDispose(heroTag);
     if (Platform.isAndroid && !plPlayerController.setSystemBrightness) {
       ScreenBrightnessPlatform.instance.resetApplicationScreenBrightness();
@@ -191,7 +198,10 @@ class _LiveRoomPageState extends State<LiveRoomPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (plPlayerController.visible = state == .resumed) {
+    final resumed = state == .resumed;
+    plPlayerController.visible = resumed;
+    _liveRoomController.setUiVisibility(appVisible: resumed);
+    if (resumed) {
       if (!plPlayerController.showDanmaku) {
         _liveRoomController
           ..refreshMsgIfNeeded()
@@ -202,6 +212,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
       _liveRoomController.cancelLiveTimer();
       plPlayerController
         ..showDanmaku = false
+        ..danmakuController?.pause()
         ..danmakuController?.clear();
     }
   }
@@ -253,6 +264,10 @@ class _LiveRoomPageState extends State<LiveRoomPage>
       _liveRoomController.fsSC.value = null;
     }
     _liveRoomController.isFullScreen = isFullScreen;
+    _liveRoomController.setUiVisibility(
+      panelsVisible:
+          !isFullScreen && !plPlayerController.isDesktopPip && !isPipMode,
+    );
     Widget player = Obx(
       key: playerKey,
       () {
@@ -745,25 +760,34 @@ class _LiveRoomPageState extends State<LiveRoomPage>
       isPP: isPP,
       liveRoomController: _liveRoomController,
     );
-    return Padding(
+    final child = Padding(
       padding: .only(bottom: 12, top: isPortrait ? 12 : 0),
       child: _liveRoomController.showSuperChat
           ? PageView(
               key: pageKey,
               controller: _liveRoomController.pageController,
               physics: tabBarScrollPhysics,
-              onPageChanged: _liveRoomController.pageIndex.call,
+              onPageChanged: _liveRoomController.onChatPageChanged,
               horizontalDragGestureRecognizer:
                   CustomHorizontalDragGestureRecognizer.new,
-              children: [
+              children: activePageChildren([
                 KeepAliveWrapper(child: chat()),
                 SuperChatPanel(
                   key: scKey,
                   controller: _liveRoomController,
                 ),
-              ],
+              ], controller: _liveRoomController.pageController!),
             )
           : chat(),
+    );
+    return Obx(
+      () => TickerMode(
+        enabled:
+            _liveRoomController.uiForegroundVisible &&
+            !isFullScreen &&
+            !plPlayerController.isDesktopPip,
+        child: child,
+      ),
     );
   }
 
@@ -1053,35 +1077,83 @@ class LiveDanmaku extends StatefulWidget {
 
 class _LiveDanmakuState extends State<LiveDanmaku> {
   PlPlayerController get plPlayerController => widget.plPlayerController;
+  DanmakuController<DanmakuExtra>? _controller;
+
+  bool get _visible =>
+      widget.liveRoomController.routeVisible.value &&
+      plPlayerController.shouldRenderDanmaku(
+        enabled: plPlayerController.enableShowLiveDanmaku.value,
+        inPip: widget.isPipMode,
+        requirePlaying: false,
+      );
+
+  void _onStateChanged() {
+    // Backgrounded apps may not render another frame. Stop the actual canvas
+    // immediately rather than waiting for a later opacity/widget update.
+    if (!_visible) {
+      _controller
+        ?..pause()
+        ..clear();
+    } else if (!plPlayerController.playerStatus.isPlaying) {
+      _controller?.pause();
+    } else {
+      _controller?.resume();
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _onPlayerStatus(PlayerStatus _) => _onStateChanged();
+
+  @override
+  void initState() {
+    super.initState();
+    plPlayerController
+      ..addDanmakuStateListener(_onStateChanged)
+      ..addStatusLister(_onPlayerStatus);
+  }
 
   @override
   void didUpdateWidget(LiveDanmaku oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.notFullscreen != widget.notFullscreen &&
-        !DanmakuOptions.sameFontScale) {
-      plPlayerController.danmakuController?.updateOption(
-        DanmakuOptions.get(notFullscreen: widget.notFullscreen),
-      );
+    if (oldWidget.plPlayerController != plPlayerController) {
+      oldWidget.plPlayerController
+        ..removeDanmakuStateListener(_onStateChanged)
+        ..removeStatusLister(_onPlayerStatus);
+      plPlayerController
+        ..addDanmakuStateListener(_onStateChanged)
+        ..addStatusLister(_onPlayerStatus);
     }
+  }
+
+  @override
+  void dispose() {
+    plPlayerController
+      ..removeDanmakuStateListener(_onStateChanged)
+      ..removeStatusLister(_onPlayerStatus);
+    if (identical(widget.liveRoomController.danmakuController, _controller)) {
+      widget.liveRoomController.danmakuController = null;
+    }
+    if (identical(plPlayerController.danmakuController, _controller)) {
+      plPlayerController.danmakuController = null;
+    }
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final option = DanmakuOptions.get(notFullscreen: widget.notFullscreen);
     return Obx(
-      () => AnimatedOpacity(
-        opacity: plPlayerController.enableShowLiveDanmaku.value
-            ? plPlayerController.danmakuOpacity.value
-            : 0,
-        duration: const Duration(milliseconds: 100),
-        child: DanmakuScreen<DanmakuExtra>(
-          createdController: (e) {
-            widget.liveRoomController.danmakuController =
-                plPlayerController.danmakuController = e;
-          },
-          option: option,
-          size: widget.size,
-        ),
+      () => EnergyAwareDanmaku<DanmakuExtra>(
+        enabled: _visible,
+        playing: plPlayerController.playerStatus.isPlaying,
+        opacity: plPlayerController.danmakuOpacity.value,
+        createdController: (controller) {
+          _controller = controller;
+          widget.liveRoomController.danmakuController =
+              plPlayerController.danmakuController = controller;
+        },
+        option: option,
+        size: widget.size,
       ),
     );
   }
