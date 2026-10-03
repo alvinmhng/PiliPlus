@@ -45,7 +45,10 @@ mixin DynMixin {
       );
     }
     return const SliverPrototypeExtentList(
-      prototypeItem: DynamicCardSkeleton(),
+      prototypeItem: TickerMode(
+        enabled: false,
+        child: DynamicCardSkeleton(),
+      ),
       delegate: SliverSingleChildDelegate(
         count: 10,
         child: DynamicCardSkeleton(),

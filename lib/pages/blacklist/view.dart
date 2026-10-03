@@ -68,7 +68,10 @@ class _BlackListPageState extends State<BlackListPage> {
     late final style = TextStyle(color: Theme.of(context).colorScheme.outline);
     return switch (loadingState) {
       Loading() => const SliverPrototypeExtentList(
-        prototypeItem: MsgFeedTopSkeleton(),
+        prototypeItem: TickerMode(
+          enabled: false,
+          child: MsgFeedTopSkeleton(),
+        ),
         delegate: SliverSingleChildDelegate(
           count: 12,
           child: MsgFeedTopSkeleton(),

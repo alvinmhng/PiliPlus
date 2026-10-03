@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/button/more_btn.dart';
 import 'package:PiliPlus/common/widgets/flutter/refresh_indicator.dart';
@@ -157,32 +158,34 @@ class _PgcPageState extends State<PgcPage> with AutomaticKeepAliveClientMixin {
                       Expanded(
                         child: TabBarView(
                           physics: const NeverScrollableScrollPhysics(),
-                          children: response.map((item) {
-                            final episodes = item.episodes;
-                            if (episodes == null || episodes.isEmpty) {
-                              return const SizedBox.shrink();
-                            }
-                            return ListView.builder(
-                              physics: const AlwaysScrollableScrollPhysics(),
-                              scrollDirection: Axis.horizontal,
-                              itemCount: episodes.length,
-                              padding: EdgeInsets.zero,
-                              itemBuilder: (context, index) {
-                                return Container(
-                                  width: Grid.smallCardWidth / 2,
-                                  margin: EdgeInsets.only(
-                                    left: Style.safeSpace,
-                                    right: index == episodes.length - 1
-                                        ? Style.safeSpace
-                                        : 0,
-                                  ),
-                                  child: PgcCardVTimeline(
-                                    item: episodes[index],
-                                  ),
-                                );
-                              },
-                            );
-                          }).toList(),
+                          children: activeTabChildren(
+                            response.map((item) {
+                              final episodes = item.episodes;
+                              if (episodes == null || episodes.isEmpty) {
+                                return const SizedBox.shrink();
+                              }
+                              return ListView.builder(
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                scrollDirection: Axis.horizontal,
+                                itemCount: episodes.length,
+                                padding: EdgeInsets.zero,
+                                itemBuilder: (context, index) {
+                                  return Container(
+                                    width: Grid.smallCardWidth / 2,
+                                    margin: EdgeInsets.only(
+                                      left: Style.safeSpace,
+                                      right: index == episodes.length - 1
+                                          ? Style.safeSpace
+                                          : 0,
+                                    ),
+                                    child: PgcCardVTimeline(
+                                      item: episodes[index],
+                                    ),
+                                  );
+                                },
+                              );
+                            }).toList(),
+                          ),
                         ),
                       ),
                     ],

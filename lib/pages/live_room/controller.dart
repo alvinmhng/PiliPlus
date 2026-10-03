@@ -1,4 +1,4 @@
-import 'dart:async' show Timer, StreamSubscription;
+import 'dart:async' show Timer, StreamSubscription, unawaited;
 import 'dart:convert' show jsonDecode;
 import 'dart:io' show Platform;
 import 'dart:math' as math;
@@ -22,6 +22,7 @@ import 'package:PiliPlus/models_new/live/live_superchat/item.dart';
 import 'package:PiliPlus/pages/common/publish/publish_route.dart';
 import 'package:PiliPlus/pages/danmaku/danmaku_model.dart';
 import 'package:PiliPlus/pages/live_room/send_danmaku/view.dart';
+import 'package:PiliPlus/pages/live_room/live_work.dart';
 import 'package:PiliPlus/pages/video/widgets/header_control.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
@@ -34,7 +35,6 @@ import 'package:PiliPlus/utils/connectivity_utils.dart';
 import 'package:PiliPlus/utils/danmaku_utils.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
 import 'package:PiliPlus/utils/extension/iterable_ext.dart';
-import 'package:PiliPlus/utils/extension/rx_ext.dart';
 import 'package:PiliPlus/utils/global_data.dart';
 import 'package:PiliPlus/utils/num_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
@@ -50,7 +50,6 @@ import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
 const int _kMaxChatCount = 500;
-const int _kTrimCount = _kMaxChatCount + 50;
 const int _kSafeTrimIndex = 200;
 
 class LiveRoomController extends GetxController {
@@ -71,7 +70,7 @@ class LiveRoomController extends GetxController {
   Timer? liveTimeTimer;
 
   void startLiveTimer() {
-    if (liveTime.value != null) {
+    if (uiForegroundVisible && liveTime.value != null) {
       liveTimeTimer ??= Timer.periodic(
         const Duration(minutes: 5),
         (_) => liveTime.refresh(),
@@ -117,6 +116,64 @@ class LiveRoomController extends GetxController {
   final disableAutoScroll = false.obs;
   bool autoScroll = true;
   LiveMessageStream? _msgStream;
+  final _messageStartup = LiveMessageStartup<LiveDmInfoData>();
+  late final _chatUpdates = DeferredLiveUpdates(messages.refresh);
+  late final _superChatUpdates = DeferredLiveUpdates(superChatMsg.refresh);
+  final routeVisible = true.obs;
+  final _appVisible = true.obs;
+  bool _panelsVisible = true;
+  bool _refreshScheduled = false;
+  bool _prefetching = false;
+
+  bool get _canAutoScroll =>
+      _chatUpdates.visible && autoScroll && !disableAutoScroll.value;
+
+  bool get uiForegroundVisible => routeVisible.value && _appVisible.value;
+
+  void setUiVisibility({
+    bool? routeVisible,
+    bool? appVisible,
+    bool? panelsVisible,
+  }) {
+    final chatWasVisible = _chatUpdates.visible;
+    final superChatWasVisible = _superChatUpdates.visible;
+    if (routeVisible != null) this.routeVisible.value = routeVisible;
+    if (appVisible != null) _appVisible.value = appVisible;
+    if (panelsVisible != null) _panelsVisible = panelsVisible;
+    final visible = uiForegroundVisible && _panelsVisible;
+    _chatUpdates.visible = visible && pageIndex.value == 0;
+    // The portrait chat page also displays a SuperChat count badge.
+    _superChatUpdates.visible = visible && showSuperChat;
+    if (!this.routeVisible.value) {
+      danmakuController
+        ?..pause()
+        ..clear();
+    }
+    if ((!chatWasVisible && _chatUpdates.visible) ||
+        (!superChatWasVisible && _superChatUpdates.visible)) {
+      _scheduleListRefresh();
+    }
+  }
+
+  void onChatPageChanged(int index) {
+    pageIndex.value = index;
+    setUiVisibility();
+  }
+
+  void _scheduleListRefresh() {
+    if (_refreshScheduled ||
+        !((_chatUpdates.visible && _chatUpdates.dirty) ||
+            (_superChatUpdates.visible && _superChatUpdates.dirty))) {
+      return;
+    }
+    _refreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _refreshScheduled = false;
+      if (isClosed) return;
+      _chatUpdates.refresh();
+      _superChatUpdates.refresh();
+    });
+  }
 
   List<String> _keywordList = const [];
   Set<int> _shieldUids = const {};
@@ -162,18 +219,17 @@ class LiveRoomController extends GetxController {
   });
 
   int chatSimpleIndex = 0;
-  int _trimDmIndex = 0;
-  int get trimDmIndex => _trimDmIndex;
+  final _chatHistory = LiveChatHistory(
+    retain: _kMaxChatCount,
+    overflow: 50,
+    safeMargin: _kSafeTrimIndex,
+  );
+  int get trimDmIndex => _chatHistory.trimmed;
   void _trimDm() {
-    final trimCount = messages.length - _trimDmIndex;
-    if (trimCount > _kTrimCount) {
-      final endIndex = messages.length - _kMaxChatCount;
-      final canTrim = (chatSimpleIndex - endIndex) > _kSafeTrimIndex;
-      if (canTrim) {
-        messages.fillRangeOnly(_trimDmIndex, endIndex);
-        _trimDmIndex = endIndex;
-      }
-    }
+    _chatHistory.trim(
+      messages.rawValue,
+      renderedIndex: chatSimpleIndex,
+    );
   }
 
   StreamSubscription? _sizeSub;
@@ -406,6 +462,7 @@ class LiveRoomController extends GetxController {
   }
 
   void scrollToBottom() {
+    if (!_canAutoScroll || isClosed) return;
     EasyThrottle.throttle(
       'liveDm',
       const Duration(milliseconds: 500),
@@ -414,7 +471,7 @@ class LiveRoomController extends GetxController {
   }
 
   void _scrollToBottom([_]) {
-    if (scrollController.hasClients) {
+    if (_canAutoScroll && !isClosed && scrollController.hasClients) {
       scrollController.animateTo(
         scrollController.position.maxScrollExtent,
         duration: const Duration(milliseconds: 500),
@@ -426,7 +483,7 @@ class LiveRoomController extends GetxController {
   void handleJumpToBottom() {
     disableAutoScroll.value = false;
     if (shouldRefresh) {
-      messages.refresh();
+      _chatUpdates.changed();
       WidgetsBinding.instance.addPostFrameCallback(_jumpToBottom);
     } else {
       _jumpToBottom();
@@ -434,42 +491,54 @@ class LiveRoomController extends GetxController {
   }
 
   void _jumpToBottom([_]) {
-    if (scrollController.hasClients) {
+    if (_chatUpdates.visible && !isClosed && scrollController.hasClients) {
       scrollController.jumpTo(scrollController.position.maxScrollExtent);
     }
   }
 
   void closeLiveMsg() {
+    _messageStartup.stop();
     _msgStream?.close();
     _msgStream = null;
   }
 
   @pragma('vm:notify-debugger-on-exception')
   Future<void> prefetch() async {
-    final res = await LiveHttp.liveRoomDmPrefetch(roomId: roomId);
-    if (res case Success(:final response)) {
-      if (response != null && response.isNotEmpty) {
-        messages.addAll(
-          response.where((item) => !isBlocked(item.text, item.extra.mid)),
-        );
-        scrollToBottom();
-      }
-    } else {
-      if (kDebugMode) {
+    if (_prefetching || isClosed) return;
+    _prefetching = true;
+    try {
+      final res = await LiveHttp.liveRoomDmPrefetch(roomId: roomId);
+      if (isClosed || !_messageStartup.wanted) return;
+      if (res case Success(:final response)) {
+        if (response != null && response.isNotEmpty) {
+          messages.rawValue.addAll(
+            response.where((item) => !isBlocked(item.text, item.extra.mid)),
+          );
+          _trimDm();
+          _chatUpdates.changed(notify: _canAutoScroll);
+          scrollToBottom();
+        }
+      } else if (kDebugMode) {
         Utils.reportError(res.toString());
       }
+    } finally {
+      _prefetching = false;
     }
   }
 
   Future<void> getSuperChatMsg() async {
     final res = await LiveHttp.superChatMsg(roomId);
+    if (isClosed || !_messageStartup.wanted) return;
     if (res.dataOrNull?.list case final list? when list.isNotEmpty) {
-      superChatMsg.addAll(list);
+      superChatMsg.rawValue.addAll(list);
+      _superChatUpdates.changed();
     }
   }
 
   void clearSC() {
-    superChatMsg.removeWhere((e) => e.expired);
+    final before = superChatMsg.length;
+    superChatMsg.rawValue.removeWhere((e) => e.expired);
+    if (before != superChatMsg.length) _superChatUpdates.changed();
   }
 
   Future<void> _fetchBlockRules() async {
@@ -494,24 +563,28 @@ class LiveRoomController extends GetxController {
   }
 
   void startLiveMsg() {
-    if (messages.isEmpty) {
-      prefetch();
-      if (showSuperChat) {
-        getSuperChatMsg();
-      }
-    }
-    if (_msgStream != null) {
-      return;
-    }
-    if (dmInfo != null) {
-      initDm(dmInfo!);
-      return;
-    }
-    LiveHttp.liveRoomGetDanmakuToken(roomId: roomId).then((res) {
-      if (res case Success(:final response)) {
-        initDm(dmInfo = response);
-      }
-    });
+    if (isClosed) return;
+    unawaited(
+      _messageStartup.start(
+        connected: () => _msgStream != null,
+        load: () async {
+          if (messages.isEmpty) {
+            unawaited(prefetch());
+            if (showSuperChat) unawaited(getSuperChatMsg());
+          }
+          if (dmInfo case final info?) return info;
+          final res = await LiveHttp.liveRoomGetDanmakuToken(roomId: roomId);
+          return res.dataOrNull;
+        },
+        connect: (info) {
+          dmInfo = info;
+          initDm(info);
+        },
+        onError: (error, stack) {
+          if (kDebugMode) Utils.reportError(error, stack);
+        },
+      ),
+    );
   }
 
   void listener() {
@@ -529,14 +602,14 @@ class LiveRoomController extends GetxController {
 
   void refreshMsgIfNeeded() {
     if (shouldRefresh) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        messages.refresh();
-      });
+      _chatUpdates.changed(notify: false);
     }
+    _scheduleListRefresh();
   }
 
   @override
   void onClose() {
+    _messageStartup.dispose();
     _stopSizeSub();
     closeLiveMsg();
     cancelLikeTimer();
@@ -568,7 +641,10 @@ class LiveRoomController extends GetxController {
   }
 
   void initDm(LiveDmInfoData info) {
-    if (info.hostList.isEmpty) {
+    if (isClosed ||
+        !_messageStartup.wanted ||
+        _msgStream != null ||
+        info.hostList.isEmpty) {
       return;
     }
     _msgStream =
@@ -585,21 +661,21 @@ class LiveRoomController extends GetxController {
   }
 
   void addDm(dynamic msg, [DanmakuContentItem<DanmakuExtra>? item]) {
-    _trimDm();
-
-    if (plPlayerController.showDanmaku) {
-      if (item != null && plPlayerController.enableShowLiveDanmaku.value) {
-        danmakuController?.addDanmaku(item);
-      }
-      if (autoScroll && !disableAutoScroll.value) {
-        messages.add(msg);
-        scrollToBottom();
-        return;
-      }
+    if (isClosed) return;
+    if (item != null && _shouldRenderDanmaku) {
+      danmakuController?.addDanmaku(item);
     }
-
-    messages.addOnly(msg);
+    messages.rawValue.add(msg);
+    _trimDm();
+    _chatUpdates.changed(notify: _canAutoScroll);
+    scrollToBottom();
   }
+
+  bool get _shouldRenderDanmaku =>
+      routeVisible.value &&
+      plPlayerController.shouldRenderDanmaku(
+        enabled: plPlayerController.enableShowLiveDanmaku.value,
+      );
 
   @pragma('vm:notify-debugger-on-exception')
   void _danmakuListener(dynamic obj) {
@@ -653,24 +729,29 @@ class LiveRoomController extends GetxController {
                   ? null
                   : UinfoMedal.fromJson(user['medal']),
             ),
-            DanmakuContentItem(
-              msg,
-              color: DanmakuOptions.blockColorful
-                  ? Colors.white
-                  : DmUtils.decimalToColor(extra['color']),
-              type: DmUtils.getPosition(extra['mode']),
-              // extra['send_from_me'] is invalid
-              selfSend: isLogin && uid == mid,
-              extra: liveExtra,
-            ),
+            _shouldRenderDanmaku
+                ? DanmakuContentItem(
+                    msg,
+                    color: DanmakuOptions.blockColorful
+                        ? Colors.white
+                        : DmUtils.decimalToColor(extra['color']),
+                    type: DmUtils.getPosition(extra['mode']),
+                    // extra['send_from_me'] is invalid
+                    selfSend: isLogin && uid == mid,
+                    extra: liveExtra,
+                  )
+                : null,
           );
           break;
         case 'SUPER_CHAT_MESSAGE' when showSuperChat:
           final item = SuperChatItem.fromJson(obj['data'], roomId);
-          superChatMsg.insert(0, item);
+          superChatMsg.rawValue.insert(0, item);
+          _superChatUpdates.changed();
           addDm(item);
           if (Platform.isAndroid && AndroidHelper.isPipMode) return;
-          if (plPlayerController.showDanmaku &&
+          if (routeVisible.value &&
+              _appVisible.value &&
+              plPlayerController.showDanmaku &&
               (isFullScreen || plPlayerController.isDesktopPip)) {
             fsSC.value = item.copyWith(
               endTime: math.min(

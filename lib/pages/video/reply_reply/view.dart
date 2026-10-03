@@ -286,7 +286,10 @@ class _VideoReplyReplyPanelState extends State<VideoReplyReplyPanel>
     final jumpIndex = _controller.index.value;
     return switch (loadingState) {
       Loading() => const SliverPrototypeExtentList(
-        prototypeItem: VideoReplySkeleton(),
+        prototypeItem: TickerMode(
+          enabled: false,
+          child: VideoReplySkeleton(),
+        ),
         delegate: SliverSingleChildDelegate(
           count: 8,
           child: VideoReplySkeleton(),

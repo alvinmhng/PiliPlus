@@ -6,6 +6,7 @@ import 'package:PiliPlus/pages/danmaku/danmaku_model.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/danmaku_options.dart';
+import 'package:PiliPlus/plugin/pl_player/widgets/energy_aware_danmaku.dart';
 import 'package:PiliPlus/utils/danmaku_utils.dart';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:get/get.dart';
@@ -51,7 +52,11 @@ class _PlDanmakuState extends State<PlDanmaku> {
       playerController,
       widget.isFileSource,
     );
-    if (playerController.enableShowDanmaku.value) {
+    if (playerController.shouldRenderDanmaku(
+      enabled: playerController.enableShowDanmaku.value,
+      inPip: widget.isPipMode,
+      requirePlaying: false,
+    )) {
       if (widget.isFileSource) {
         _plDanmakuController.initFileDmIfNeeded();
       } else {
@@ -62,42 +67,51 @@ class _PlDanmakuState extends State<PlDanmaku> {
     }
     playerController
       ..addStatusLister(playerListener)
+      ..addDanmakuStateListener(_onRenderStateChanged)
       ..addPositionListener(videoPositionListen);
   }
 
   @override
   void didUpdateWidget(PlDanmaku oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.notFullscreen != widget.notFullscreen &&
-        !DanmakuOptions.sameFontScale) {
-      _controller?.updateOption(
-        DanmakuOptions.get(notFullscreen: widget.notFullscreen),
-      );
+    _synchronize();
+  }
+
+  bool get _visible => playerController.shouldRenderDanmaku(
+    enabled: playerController.enableShowDanmaku.value,
+    inPip: widget.isPipMode,
+    requirePlaying: false,
+  );
+
+  bool get _active => playerController.shouldRenderDanmaku(
+    enabled: playerController.enableShowDanmaku.value,
+    inPip: widget.isPipMode,
+  );
+
+  void _synchronize() {
+    if (!_visible) {
+      _controller
+        ?..pause()
+        ..clear();
+      latestAddedPosition = -1;
+    } else if (_active) {
+      _controller?.resume();
+    } else {
+      _controller?.pause();
     }
   }
 
-  // 播放器状态监听
-  void playerListener(PlayerStatus status) {
-    if (_controller case final controller?) {
-      if (status.isPlaying) {
-        controller.resume();
-      } else {
-        controller.pause();
-      }
-    }
+  void _onRenderStateChanged() {
+    if (!mounted) return;
+    _synchronize();
+    setState(() {});
   }
+
+  void playerListener(PlayerStatus _) => _onRenderStateChanged();
 
   @pragma('vm:notify-debugger-on-exception')
   void videoPositionListen(Duration position) {
-    if (_controller == null || !playerController.enableShowDanmaku.value) {
-      return;
-    }
-
-    if (!playerController.showDanmaku && !widget.isPipMode) {
-      return;
-    }
-
-    if (!playerController.playerStatus.isPlaying) {
+    if (_controller == null || !_active) {
       return;
     }
 
@@ -159,8 +173,12 @@ class _PlDanmakuState extends State<PlDanmaku> {
   void dispose() {
     playerController
       ..removePositionListener(videoPositionListen)
+      ..removeDanmakuStateListener(_onRenderStateChanged)
       ..removeStatusLister(playerListener);
     _plDanmakuController.dispose();
+    if (identical(playerController.danmakuController, _controller)) {
+      playerController.danmakuController = null;
+    }
     _controller = null;
     super.dispose();
   }
@@ -172,18 +190,16 @@ class _PlDanmakuState extends State<PlDanmaku> {
       speed: playerController.playbackSpeed,
     );
     return Obx(
-      () => AnimatedOpacity(
-        opacity: playerController.enableShowDanmaku.value
-            ? playerController.danmakuOpacity.value
-            : 0,
-        duration: const Duration(milliseconds: 100),
-        child: DanmakuScreen<DanmakuExtra>(
-          createdController: (e) {
-            playerController.danmakuController = _controller = e;
-          },
-          option: option,
-          size: widget.size,
-        ),
+      () => EnergyAwareDanmaku<DanmakuExtra>(
+        enabled: _visible,
+        playing: playerController.playerStatus.isPlaying,
+        opacity: playerController.danmakuOpacity.value,
+        createdController: (e) {
+          playerController.danmakuController = _controller = e;
+          _synchronize();
+        },
+        option: option,
+        size: widget.size,
       ),
     );
   }

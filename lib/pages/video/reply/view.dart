@@ -150,7 +150,10 @@ class _VideoReplyPanelState extends State<VideoReplyPanel>
     switch (loadingState) {
       case Loading():
         return const SliverPrototypeExtentList(
-          prototypeItem: VideoReplySkeleton(),
+          prototypeItem: TickerMode(
+            enabled: false,
+            child: VideoReplySkeleton(),
+          ),
           delegate: SliverSingleChildDelegate(
             count: 5,
             child: VideoReplySkeleton(),

@@ -1,3 +1,4 @@
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/common/widgets/appbar/appbar.dart';
 import 'package:PiliPlus/common/widgets/flutter/pop_scope.dart';
 import 'package:PiliPlus/common/widgets/gesture/horizontal_drag_gesture_recognizer.dart';
@@ -139,9 +140,10 @@ class _LaterPageState extends State<LaterPage>
                       controller: _tabController,
                       horizontalDragGestureRecognizer:
                           CustomHorizontalDragGestureRecognizer.new,
-                      children: LaterViewType.values
-                          .map((item) => item.page)
-                          .toList(),
+                      children: activeTabChildren(
+                        LaterViewType.values.map((item) => item.page).toList(),
+                        controller: _tabController,
+                      ),
                     ),
                   ),
                 ],

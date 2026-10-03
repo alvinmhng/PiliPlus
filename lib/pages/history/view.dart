@@ -1,3 +1,4 @@
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/common/widgets/appbar/appbar.dart';
 import 'package:PiliPlus/common/widgets/flutter/pop_scope.dart';
 import 'package:PiliPlus/common/widgets/flutter/refresh_indicator.dart';
@@ -138,12 +139,15 @@ class _HistoryPageState extends State<HistoryPage>
                         controller: _historyController.tabController,
                         horizontalDragGestureRecognizer:
                             CustomHorizontalDragGestureRecognizer.new,
-                        children: [
-                          KeepAliveWrapper(child: child),
-                          ...tabs.map(
-                            (item) => HistoryPage(type: item.type),
-                          ),
-                        ],
+                        children: activeTabChildren(
+                          [
+                            KeepAliveWrapper(child: child),
+                            ...tabs.map(
+                              (item) => HistoryPage(type: item.type),
+                            ),
+                          ],
+                          controller: _historyController.tabController,
+                        ),
                       ),
                     ),
                   ],

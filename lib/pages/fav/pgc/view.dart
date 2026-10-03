@@ -1,3 +1,4 @@
+import 'package:PiliPlus/common/widgets/active_tab_ticker.dart';
 import 'package:PiliPlus/pages/fav/pgc/child_view.dart';
 import 'package:PiliPlus/pages/fav/pgc/controller.dart';
 import 'package:PiliPlus/utils/extension/scroll_controller_ext.dart';
@@ -104,12 +105,15 @@ class _FavPgcPageState extends State<FavPgcPage>
           child: TabBarView(
             controller: _tabController,
             physics: const NeverScrollableScrollPhysics(),
-            children: List.generate(
-              3,
-              (index) => FavPgcChildPage(
-                type: widget.type,
-                followStatus: index + 1,
+            children: activeTabChildren(
+              List.generate(
+                3,
+                (index) => FavPgcChildPage(
+                  type: widget.type,
+                  followStatus: index + 1,
+                ),
               ),
+              controller: _tabController,
             ),
           ),
         ),
