@@ -117,6 +117,51 @@ void main() {
     expect(writes, ['no', '2']);
   });
 
+  test(
+    'iOS PiP keeps video selected while ordinary background audio suspends',
+    () {
+      var current = '2';
+      final writes = <String>[];
+      final policy = BackgroundVideoTrack()
+        ..sourceReady(1, openedSuspended: false);
+      void update({
+        bool autoPip = false,
+        bool pending = false,
+        bool active = false,
+      }) {
+        policy.update(
+          generation: 1,
+          suspended: canSuspendBackgroundVideo(
+            mobile: true,
+            backgrounded: true,
+            backgroundPlay: true,
+            android: false,
+            ios: true,
+            inPip: active,
+            autoPip: autoPip,
+            manualPipPending: pending,
+          ),
+          audioOnly: false,
+          read: () => current,
+          write: (value) {
+            writes.add(value);
+            current = value;
+          },
+        );
+      }
+
+      update(autoPip: true);
+      update(pending: true);
+      update(active: true);
+      expect(writes, isEmpty);
+      expect(current, '2');
+      update();
+      expect(current, 'no');
+      update(active: true);
+      expect(writes, ['no', '2']);
+    },
+  );
+
   test('video-only and undiscovered audio cannot enable video suspension', () {
     expect(hasSelectedPlaybackAudio(track: 'no', sampleRate: null), isFalse);
     expect(hasSelectedPlaybackAudio(track: '', sampleRate: 48000), isFalse);

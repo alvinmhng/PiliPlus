@@ -75,6 +75,15 @@ class _PlDanmakuState extends State<PlDanmaku> {
   void didUpdateWidget(PlDanmaku oldWidget) {
     super.didUpdateWidget(oldWidget);
     _synchronize();
+    if (oldWidget.notFullscreen != widget.notFullscreen &&
+        !DanmakuOptions.sameFontScale) {
+      _controller?.updateOption(
+        DanmakuOptions.get(
+          notFullscreen: widget.notFullscreen,
+          speed: playerController.playbackSpeed,
+        ),
+      );
+    }
   }
 
   bool get _visible => playerController.shouldRenderDanmaku(

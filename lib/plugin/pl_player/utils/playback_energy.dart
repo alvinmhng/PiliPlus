@@ -22,6 +22,7 @@ bool canSuspendBackgroundVideo({
   required bool backgroundPlay,
   required bool inPip,
   required bool android,
+  bool ios = false,
   required bool autoPip,
   required bool manualPipPending,
 }) =>
@@ -29,7 +30,7 @@ bool canSuspendBackgroundVideo({
     backgrounded &&
     backgroundPlay &&
     !inPip &&
-    !(android && (autoPip || manualPipPending));
+    !((android || ios) && (autoPip || manualPipPending));
 
 bool hasSelectedPlaybackAudio({
   required String track,
