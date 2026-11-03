@@ -111,7 +111,10 @@ jobs:
         shell: pwsh
         env:
           GITHUB_WORKSPACE: ${{ github.workspace }}/app
-        run: lib/scripts/patch.ps1 Linux
+        run: |
+          $syncAppRoot = (Get-Location).Path
+          $env:GITHUB_WORKSPACE = $syncAppRoot
+          & (Join-Path $syncAppRoot "lib/scripts/patch.ps1") Linux
 
       - name: Analyze merged source
         working-directory: app
