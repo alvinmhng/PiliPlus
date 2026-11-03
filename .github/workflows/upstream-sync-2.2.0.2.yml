@@ -1,0 +1,105 @@
+name: Validate upstream 2.2.0.2
+
+on:
+  push:
+    branches:
+      - codex/validate-upstream-2.2.0.2-20261104
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Merge and validate upstream 2.2.0.2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout integration instructions
+        uses: actions/checkout@v7
+        with:
+          path: sync-helper
+
+      - name: Checkout fork source
+        uses: actions/checkout@v7
+        with:
+          ref: 161a6321613731dacdf276e8477fe1292a896577
+          fetch-depth: 0
+          path: app
+
+      - name: Merge reviewed upstream release
+        working-directory: app
+        shell: bash
+        run: |
+          git config user.name "Alvin Ng"
+          git config user.email "70877234+alvinmhng@users.noreply.github.com"
+          git fetch --no-tags https://github.com/bggRGjQaUbCoE/PiliPlus.git refs/tags/2.2.0.2
+          test "$(git rev-parse FETCH_HEAD)" = d9e9626f1a3f89cd9ca85e18f61aaba02634e12a
+          if git merge --no-commit --no-ff FETCH_HEAD; then
+            :
+          elif test -z "$(git diff --name-only --diff-filter=U)"; then
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          source = Path.cwd()
+          rules = Path(os.environ['GITHUB_WORKSPACE']) / 'sync-helper/.github/upstream-sync-resolutions.json'
+          changes = json.loads(rules.read_text()) if rules.exists() else {}
+          for name, content in changes.items():
+              target = source / name
+              if not target.resolve().is_relative_to(source):
+                  raise ValueError('Resolution path leaves the checkout')
+              if content is None:
+                  subprocess.run(['git', 'rm', '--ignore-unmatch', '--', name], check=True)
+              else:
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_text(content)
+                  subprocess.run(['git', 'add', '--', name], check=True)
+
+          conflicts = subprocess.check_output(
+              ['git', 'diff', '--name-only', '--diff-filter=U'], text=True,
+          ).splitlines()
+          print('MERGE_CONFLICT_PATHS=' + json.dumps(conflicts), flush=True)
+          for name in conflicts:
+              target = source / name
+              print('MERGE_CONFLICT_FILE=' + json.dumps({
+                  'path': name,
+                  'content': target.read_text() if target.exists() else None,
+              }), flush=True)
+          if conflicts:
+              raise SystemExit('Resolve the reported conflicts before validation')
+          subprocess.run(['git', 'add', '--all'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--check', '--', '.', ':(exclude)**/*.patch'], check=True)
+          subprocess.run(['git', 'commit', '-m', 'Merge upstream 2.2.0.2 and preserve fork playback features'], check=True)
+          subprocess.run(['git', 'log', '-1', '--format=SOURCE_COMMIT=%H'], check=True)
+          PY
+
+      - name: Install Linux native test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libx11-dev libxi-dev libayatana-appindicator3-dev libasound2-dev libmpv-dev
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.9
+          cache: true
+
+      - name: Apply upstream SDK and UI patches
+        working-directory: app
+        shell: pwsh
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}/app
+        run: lib/scripts/patch.ps1 Linux
+
+      - name: Analyze merged source
+        working-directory: app
+        run: flutter analyze --no-pub --no-fatal-infos
+
+      - name: Run regression suite
+        working-directory: app
+        run: flutter test --no-pub --reporter expanded
