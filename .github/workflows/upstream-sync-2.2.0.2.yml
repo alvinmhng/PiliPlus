@@ -89,6 +89,23 @@ jobs:
           flutter-version: 3.47.9
           cache: true
 
+      - name: Format integration edits
+        working-directory: app
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          rules = Path(os.environ['GITHUB_WORKSPACE']) / 'sync-helper/.github/upstream-sync-resolutions.json'
+          files = [name for name, value in json.loads(rules.read_text()).items() if value is not None and name.endswith('.dart')]
+          if files:
+              subprocess.run(['dart', 'format', *files], check=True)
+          subprocess.run(['git', 'add', '--all'], check=True)
+          subprocess.run(['git', 'commit', '--amend', '--no-edit'], check=True)
+          PY
+
       - name: Apply upstream SDK and UI patches
         working-directory: app
         shell: pwsh
@@ -98,8 +115,70 @@ jobs:
 
       - name: Analyze merged source
         working-directory: app
-        run: flutter analyze --no-pub --no-fatal-infos
+        shell: bash
+        run: flutter analyze --no-pub --no-fatal-infos 2>&1 | tee "$RUNNER_TEMP/upstream-analysis.log"
 
       - name: Run regression suite
         working-directory: app
-        run: flutter test --no-pub --reporter expanded
+        shell: bash
+        run: flutter test --no-pub --reporter expanded 2>&1 | tee "$RUNNER_TEMP/upstream-tests.log"
+      - name: Export read-only validation evidence
+        working-directory: app
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          fork = '161a6321613731dacdf276e8477fe1292a896577'
+          upstream = 'd9e9626f1a3f89cd9ca85e18f61aaba02634e12a'
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          def entries(ref):
+              result = {}
+              for entry in git('ls-tree', '-r', '-z', ref).split(bytes([0])):
+                  if not entry:
+                      continue
+                  meta, name = entry.split(bytes([9]), 1)
+                  mode, kind, sha = meta.decode().split()
+                  result[name.decode()] = (mode, kind, sha)
+              return result
+
+          subprocess.run(['git', 'add', '--all'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--check', '--', '.', ':(exclude)**/*.patch'], check=True)
+          subprocess.run(['git', 'commit', '--amend', '--no-edit'], check=True)
+          before, after = entries(upstream), entries('HEAD')
+          known = {value[2] for value in [*before.values(), *entries(fork).values()]}
+          emitted = set()
+          tree = []
+          for name in sorted(set(before) | set(after)):
+              old, new = before.get(name), after.get(name)
+              if old == new:
+                  continue
+              if new is None:
+                  tree.append({'path': name, 'mode': old[0], 'type': old[1], 'sha': None})
+                  continue
+              mode, kind, sha = new
+              if kind == 'blob' and sha not in known and sha not in emitted:
+                  print('VALIDATED_BLOB=' + json.dumps({
+                      'sha': sha, 'encoding': 'base64',
+                      'content': base64.b64encode(git('cat-file', 'blob', sha)).decode(),
+                  }), flush=True)
+                  emitted.add(sha)
+              tree.append({'path': name, 'mode': mode, 'type': kind, 'sha': sha})
+
+          test_log = Path(os.environ['RUNNER_TEMP'], 'upstream-tests.log').read_text()
+          total = re.findall(r'\+(\d+): All tests passed!', test_log)
+          assert total, 'No successful full-suite result found'
+          receipt = {
+              'tree': git('rev-parse', 'HEAD^{tree}').decode().strip(),
+              'base_tree': git('rev-parse', upstream + '^{tree}').decode().strip(),
+              'parents': [fork, upstream], 'entries': tree,
+              'tests_passed': int(total[-1]), 'flutter': '3.47.9',
+          }
+          print('VALIDATED_MANIFEST=' + json.dumps(receipt), flush=True)
+          PY
